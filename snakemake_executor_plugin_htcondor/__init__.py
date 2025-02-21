@@ -16,18 +16,11 @@ import traceback
 from os.path import join, basename, abspath, dirname
 from os import makedirs, sep
 import re
+import sys
 
-
-
-
-
-
-
-
-
-
-
-
+"""
+Given a list of shared prefixes, determine whether a path is on a shared filesystem
+"""
 def is_shared_fs(in_path, shared_prefixes) -> bool:
     """
     Check if the job is on a shared filesystem, as configured using the
@@ -37,15 +30,6 @@ def is_shared_fs(in_path, shared_prefixes) -> bool:
     normalized_path = join(in_path, '')
 
     return any(normalized_path.startswith(prefix) for prefix in normalized_prefixes)
-
-
-
-
-
-
-
-
-
 
 # Optional:
 # Define additional settings for your executor.
@@ -124,24 +108,6 @@ class Executor(RemoteExecutor):
         self.jobDir = self.workflow.executor_settings.jobdir
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        
     def run_job(self, job: JobExecutorInterface):
         # Submitting job to HTCondor
 
@@ -149,7 +115,7 @@ class Executor(RemoteExecutor):
         makedirs(self.jobDir, exist_ok=True)
 
         if (jobWrapper := job.resources.get("job_wrapper")):
-            job_exec = basename(jobWrapper)
+            job_exec = jobWrapper
             # The wrapper script will take as input all snakemake arguments, so we assume
             # it contains something like `snakemake $@`
             job_args = self.format_job_exec(job).removeprefix("python -m snakemake ")
@@ -202,8 +168,8 @@ class Executor(RemoteExecutor):
 
             # Grab our list of shared filesystem prefixes. We'll use these to determine
             # which files HTCondor has to transfer to the EP, and which might already be accessible
-            shared_fs_prefixes = job.resources.get("shared_fs_prefixes")
-            shared_fs_prefixes = [item.strip() for item in shared_fs_prefixes.split(',')]
+            shared_fs_prefixes = job.resources.get("shared_fs_prefixes", "")
+            shared_fs_prefixes = [item.strip() for item in shared_fs_prefixes.split(',') if item.strip()]
             self.logger.debug(f"Shared filesystem prefixes: {shared_fs_prefixes}")
             # Initialize the transfer input files list
             transfer_input_files = []
@@ -211,16 +177,22 @@ class Executor(RemoteExecutor):
             # Add the snakefile to the transfer list
             snakefile = self.get_snakefile()
             if not is_shared_fs(snakefile, shared_fs_prefixes):
-                transfer_input_files.append(snakefile)
+                transfer_input_files.append(str(snakefile))
 
             if job.input:
+                inputs = [input for input in job.input]
+
                 # When snakemake passes its input args to the executable, it does so using the path relative
-                # to the specified input directory, e.g. `input/foo/bar`, so we need to transfer the top-most
-                # input directories the will contain any subdirectories/files needed by the job.
-                top_most_input_directories = {path.split(sep)[0] for path in job.input}
-                for path in top_most_input_directories:
+                # to the specified input directory, e.g. `input/foo/bar`. Therefore, we either need to transfer
+                # the inputs in a way that preserves paths relative to the input, or we need to transfer the entire
+                # input directory. By default, we'll preserve relative paths, but if the user specifies otherwise,
+                # we'll transfer the entire input directory.
+                if not job.resources.get("preserve_relative_paths", True):
+                    inputs = {path.split(sep)[0] for path in inputs}
+
+                for path in inputs:
                     if path and not is_shared_fs(path, shared_fs_prefixes):
-                        transfer_input_files.append(path)
+                        transfer_input_files.append(str(path))
 
             if self.workflow.configfiles:
                 # Note that when we transfer the config file(s), we'll pass Condor an absolute path, but we need to
@@ -231,7 +203,7 @@ class Executor(RemoteExecutor):
                     fname = basename(fpath)
                     config_fnames.append(fname)
                     if fpath and not is_shared_fs(fpath, shared_fs_prefixes):
-                        transfer_input_files.append(fpath)
+                        transfer_input_files.append(str(fpath))
                 config_arg = " ".join(config_fnames)
 
                 configfiles_pattern = r"--configfiles .*?(?=( --|$))"
@@ -248,7 +220,7 @@ class Executor(RemoteExecutor):
                 top_most_output_directories = {path.split(sep)[0] for path in job.output}
                 for path in top_most_output_directories:
                     if path and not is_shared_fs(path, shared_fs_prefixes):
-                        transfer_output_files.append(path)
+                        transfer_output_files.append(str(path))
                 
                 if transfer_output_files:
                     self.logger.debug(f"Transfer output files: {transfer_output_files}")
@@ -259,6 +231,9 @@ class Executor(RemoteExecutor):
             submit_dict["getenv"] = job.resources.get("getenv")
         else:
             submit_dict["getenv"] = False
+
+        if job.resources.get("preserve_relative_paths", True):
+            submit_dict["preserve_relative_paths"] = True
 
         for key in ["environment", "input", "max_materialize", "max_idle"]:
             if job.resources.get(key):
@@ -302,7 +277,7 @@ class Executor(RemoteExecutor):
         # Check any custom classads
         for key in job.resources.keys():
             if key.startswith("classad_"):
-                classad_key = key.removeprefix("classad_") + "+"
+                classad_key = "+" + key.removeprefix("classad_")
                 submit_dict[classad_key] = job.resources.get(key)
 
         # HTCondor submit description
