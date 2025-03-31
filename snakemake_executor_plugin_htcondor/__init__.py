@@ -11,7 +11,7 @@ from snakemake_interface_executor_plugins.jobs import (
 )
 from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
-import htcondor
+import htcondor2 as htcondor
 import traceback
 from os.path import join, basename, abspath, dirname
 from os import makedirs, sep
@@ -77,23 +77,6 @@ common_settings = CommonSettings(
     # indicate that the HTCondor executor can transfer its own files to the remote node
     can_transfer_local_files=True,
 )
-
-def get_creds() -> bool:
-    """
-    Get credentials to avoid job going on hold due to lack of credentials
-    """
-    # thanks @tlmiller
-    local_provider_name = htcondor.param.get("LOCAL_CREDMON_PROVIDER_NAME")
-    if local_provider_name is None:
-        return False
-    magic = ("LOCAL:%s" % local_provider_name).encode()
-    credd = htcondor.Credd()
-    credd.add_user_cred(htcondor.CredTypes.Kerberos, magic)
-    return True
-
-
-class CredsError(Exception):
-    pass
 
 # Required:
 # Implementation of your executor
@@ -283,19 +266,14 @@ class Executor(RemoteExecutor):
         # HTCondor submit description
         self.logger.debug(f"HTCondor submit subscription: {submit_dict}")
         submit_description = htcondor.Submit(submit_dict)
+        submit_description.issue_credentials()
 
         # Client for HTCondor Schedduler
         schedd = htcondor.Schedd()
 
         # Submitting job to HTCondor
         try:
-            have_creds = get_creds()
-            if not have_creds:
-                raise CredsError("Credentials not found for this workflow")
             submit_result = schedd.submit(submit_description)
-        except CredsError as ce:
-            traceback.print_exc()
-            print(f"CredsError occurred: {ce}")
         except Exception as e:
             traceback.print_exc()
             raise WorkflowError(f"Failed to submit HTCondor job: {e}")
