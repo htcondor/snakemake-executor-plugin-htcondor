@@ -15,7 +15,7 @@ documentation = "https://snakemake.github.io/snakemake-plugin-catalog/plugins/ex
 python = "^3.11"
 snakemake-interface-common = "^1.17.1"
 snakemake-interface-executor-plugins = "^9.0.0"
-htcondor = "^23.4.0"
+htcondor = "^24.5.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.2.0"
