@@ -319,8 +319,11 @@ class Executor(RemoteExecutor):
                                 "JobStatus",
                             ],
                         )
-                        #  Storing the one event from HistoryIterator to list
-                        job_status = [next(job_status)]
+                        #  Storing the one event from history list
+                        if job_status and len(job_status) >= 1:
+                            job_status = [job_status[0]]
+                        else:
+                            raise ValueError(f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}.")
                 except Exception as e:
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
                     # Assuming the job is still running and retry next time
