@@ -13,7 +13,7 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 import traceback
-from os.path import join, basename, abspath, dirname
+from os.path import join, basename, abspath
 from os import makedirs, sep
 import re
 
@@ -87,8 +87,8 @@ class Executor(RemoteExecutor):
 
         if jobWrapper := job.resources.get("job_wrapper"):
             job_exec = basename(jobWrapper)
-            # The wrapper script will take as input all snakemake arguments, so we assume
-            # it contains something like `snakemake $@`
+            # The wrapper script will take as input all snakemake arguments,
+            # so we assume it contains something like `snakemake $@`
             job_args = self.format_job_exec(job).removeprefix("python -m snakemake ")
         else:
             job_exec = self.get_python_executable()
@@ -128,7 +128,7 @@ class Executor(RemoteExecutor):
             if universe not in supported_universes:
                 raise WorkflowError(
                     f"The universe {universe} is not supported by HTCondor.",
-                    "See the HTCondor reference manual for a list of supported universes.",
+                    "See the HTCondor reference manual for a list of supported universes.", # noqa
                 )
 
             submit_dict["universe"] = universe
@@ -137,7 +137,7 @@ class Executor(RemoteExecutor):
             container_image = job.resources.get("container_image")
             if universe in ["docker", "container"] and not container_image:
                 raise WorkflowError(
-                    "A container image must be specified when using the docker or container universe."
+                    "A container image must be specified when using the docker or container universe." # noqa
                 )
             elif container_image:
                 submit_dict["container_image"] = container_image
@@ -152,17 +152,21 @@ class Executor(RemoteExecutor):
             submit_dict["transfer_input_files"] = abspath(self.get_snakefile())
 
             if job.input:
-                # When snakemake passes its input args to the executable, it does so using the path relative
-                # to the specified input directory, e.g. `input/foo/bar`, so we need to transfer the top-most
-                # input directories the will contain any subdirectories/files needed by the job.
+                # When snakemake passes its input args to the executable,
+                # it does so using the path relative to the specified input directory,
+                # e.g. `input/foo/bar`,
+                # so we need to transfer the top-most input directories,
+                # they will contain any subdirectories/files needed by the job.
                 top_most_input_directories = {path.split(sep)[0] for path in job.input}
                 submit_dict["transfer_input_files"] += ", " + ", ".join(
                     sorted(top_most_input_directories)
                 )
 
             if self.workflow.configfiles:
-                # Note that when we transfer the config file(s), we'll pass Condor an absolute path, but we need to
-                # modify the job args to use only the file name(s) when execution begins, because the configfile(s)
+                # Note that when we transfer the config file(s),
+                # we'll pass Condor an absolute path,
+                # but we need to modify the job args to use only the file name(s)
+                # when execution begins, because the configfile(s)
                 # will be accessed from the job's scratch dir.
                 config_fnames = []
                 for fpath in self.workflow.configfiles:
@@ -303,7 +307,7 @@ class Executor(RemoteExecutor):
                             job_status = [job_status[0]]
                         else:
                             raise ValueError(
-                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}."
+                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}." # noqa
                             )
                 except Exception as e:
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
