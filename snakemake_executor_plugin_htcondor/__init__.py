@@ -11,9 +11,11 @@ from snakemake_interface_executor_plugins.jobs import (
 )
 from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
-import htcondor
-from os.path import join
-from os import makedirs
+import htcondor2 as htcondor
+import traceback
+from os.path import join, basename, abspath, dirname
+from os import makedirs, sep
+import re
 
 
 # Optional:
@@ -32,7 +34,6 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": True,
         },
     )
-
 
 # Required:
 # Specify common settings shared by various executors.
@@ -60,8 +61,9 @@ common_settings = CommonSettings(
     auto_deploy_default_storage_provider=True,
     # specify initial amount of seconds to sleep before checking for job status
     init_seconds_before_status_checks=0,
+    # indicate that the HTCondor executor can transfer its own files to the remote node
+    can_transfer_local_files=True,
 )
-
 
 # Required:
 # Implementation of your executor
@@ -81,8 +83,14 @@ class Executor(RemoteExecutor):
         # Creating directory to store log, output and error files
         makedirs(self.jobDir, exist_ok=True)
 
-        job_exec = self.get_python_executable()
-        job_args = self.format_job_exec(job).removeprefix(job_exec + " ")
+        if (jobWrapper := job.resources.get("job_wrapper")):
+            job_exec = basename(jobWrapper)
+            # The wrapper script will take as input all snakemake arguments, so we assume
+            # it contains something like `snakemake $@`
+            job_args = self.format_job_exec(job).removeprefix("python -m snakemake ")
+        else:
+            job_exec = self.get_python_executable()
+            job_args = self.format_job_exec(job).removeprefix(job_exec + " ")
 
         # HTCondor cannot handle single quotes
         if "'" in job_args:
@@ -102,11 +110,68 @@ class Executor(RemoteExecutor):
             "request_cpus": str(job.threads),
         }
 
+
+        # Supported universes for HTCondor
+        supported_universes = ["vanilla", "docker", "container", "scheduler", "local", "parallel", "grid", "java", "vm"]
+        if (universe := job.resources.get("universe")):
+            if universe not in supported_universes:
+                raise WorkflowError(
+                    f"The universe {universe} is not supported by HTCondor.",
+                    "See the HTCondor reference manual for a list of supported universes."
+                )
+
+            submit_dict["universe"] = universe
+
+            # Check for container image requirement
+            container_image = job.resources.get("container_image")
+            if universe in ["docker", "container"] and not container_image:
+                raise WorkflowError("A container image must be specified when using the docker or container universe.")
+            elif container_image:
+                submit_dict["container_image"] = container_image
+
+
+        # If we're not using a shared filesystem, we need to setup transfers
+        # for any job wrapper, config files, input files, etc
+        if not self.workflow.storage_settings.shared_fs_usage:
+            submit_dict["should_transfer_files"] = "YES"
+            submit_dict["when_to_transfer_output"] = "ON_EXIT"
+
+            # Add the snakefile to the transfer list
+            submit_dict["transfer_input_files"] = abspath(self.get_snakefile())
+
+            if job.input:
+                # When snakemake passes its input args to the executable, it does so using the path relative
+                # to the specified input directory, e.g. `input/foo/bar`, so we need to transfer the top-most
+                # input directories the will contain any subdirectories/files needed by the job.
+                top_most_input_directories = {path.split(sep)[0] for path in job.input}
+                submit_dict["transfer_input_files"] += ", " + ", ".join(sorted(top_most_input_directories))
+
+            if self.workflow.configfiles:
+                # Note that when we transfer the config file(s), we'll pass Condor an absolute path, but we need to
+                # modify the job args to use only the file name(s) when execution begins, because the configfile(s)
+                # will be accessed from the job's scratch dir.
+                config_fnames = []
+                for fpath in self.workflow.configfiles:
+                    fname = basename(fpath)
+                    config_fnames.append(fname)
+                config_arg = " ".join(config_fnames)
+
+                configfiles_pattern = r"--configfiles .*?(?=( --|$))"
+                submit_dict["arguments"] = re.sub(configfiles_pattern, f"--configfiles {config_arg}", submit_dict["arguments"])
+
+                submit_dict["transfer_input_files"] += ", " + ", ".join(str(path) for path in self.workflow.configfiles)
+
+            if job.output:
+                # For outputs, we only care about the parent directory, which we'll tell
+                # HTCondor to transfer back to the AP.
+                top_most_output_directories = {path.split(sep)[0] for path in job.output}
+                submit_dict["transfer_output_files"] = ", ".join(sorted(top_most_output_directories))
+
         # Basic commands
         if job.resources.get("getenv"):
             submit_dict["getenv"] = job.resources.get("getenv")
         else:
-            submit_dict["getenv"] = True
+            submit_dict["getenv"] = False
 
         for key in ["environment", "input", "max_materialize", "max_idle"]:
             if job.resources.get(key):
@@ -144,6 +209,15 @@ class Executor(RemoteExecutor):
             if job.resources.get(key):
                 submit_dict[key] = job.resources.get(key)
 
+        # Name the jobs in the queue something that tells us what the job is
+        submit_dict["batch_name"] = f"{job.name}-{job.jobid}"
+
+        # Check any custom classads
+        for key in job.resources.keys():
+            if key.startswith("classad_"):
+                classad_key = key.removeprefix("classad_") + "+"
+                submit_dict[classad_key] = job.resources.get(key)
+
         # HTCondor submit description
         self.logger.debug(f"HTCondor submit subscription: {submit_dict}")
         submit_description = htcondor.Submit(submit_dict)
@@ -153,8 +227,10 @@ class Executor(RemoteExecutor):
 
         # Submitting job to HTCondor
         try:
+            submit_description.issue_credentials()
             submit_result = schedd.submit(submit_description)
         except Exception as e:
+            traceback.print_exc()
             raise WorkflowError(f"Failed to submit HTCondor job: {e}")
 
         self.logger.info(
@@ -198,8 +274,11 @@ class Executor(RemoteExecutor):
                                 "JobStatus",
                             ],
                         )
-                        #  Storing the one event from HistoryIterator to list
-                        job_status = [next(job_status)]
+                        #  Storing the one event from history list
+                        if job_status and len(job_status) >= 1:
+                            job_status = [job_status[0]]
+                        else:
+                            raise ValueError(f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}.")
                 except Exception as e:
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
                     # Assuming the job is still running and retry next time
