@@ -35,7 +35,6 @@ class ExecutorSettings(ExecutorSettingsBase):
         },
     )
 
-
 # Required:
 # Specify common settings shared by various executors.
 common_settings = CommonSettings(
@@ -65,7 +64,6 @@ common_settings = CommonSettings(
     # indicate that the HTCondor executor can transfer its own files to the remote node
     can_transfer_local_files=True,
 )
-
 
 # Required:
 # Implementation of your executor
