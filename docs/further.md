@@ -92,7 +92,7 @@ jobs: 30
 executor: htcondor
 configfile: my_config.yaml
 shared-fs-usage: none
-htcondor-job-dir: /path/to/MyHTCondorWorkflow/logs
+htcondor-jobdir: /path/to/MyHTCondorWorkflow/logs
 default-resources:
   job_wrapper: "wrapper.sh"
   container_image: "runtime_container.sif"

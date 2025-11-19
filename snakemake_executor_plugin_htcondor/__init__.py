@@ -212,12 +212,17 @@ class Executor(RemoteExecutor):
         # Name the jobs in the queue something that tells us what the job is
         submit_dict["batch_name"] = f"{job.name}-{job.jobid}"
 
+        
         # Check any custom classads
         for key in job.resources.keys():
             if key.startswith("classad_"):
-                classad_key = key.removeprefix("classad_") + "+"
-                submit_dict[classad_key] = job.resources.get(key)
-
+                classad_key =  "+" + key.removeprefix("classad_")
+                value = job.resources.get(key)
+                # If the value is a string, HTCondor requires it to be quoted.
+                if isinstance(value, str):
+                    submit_dict[classad_key] = f'"{value}"'
+                else:
+                    submit_dict[classad_key] = value
         # HTCondor submit description
         self.logger.debug(f"HTCondor submit subscription: {submit_dict}")
         submit_description = htcondor.Submit(submit_dict)
