@@ -13,7 +13,7 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 import traceback
-from os.path import join, basename, abspath, dirname
+from os.path import join, basename, abspath
 from os import makedirs, sep
 import re
 
@@ -83,10 +83,10 @@ class Executor(RemoteExecutor):
         # Creating directory to store log, output and error files
         makedirs(self.jobDir, exist_ok=True)
 
-        if (jobWrapper := job.resources.get("job_wrapper")):
+        if jobWrapper := job.resources.get("job_wrapper"):
             job_exec = basename(jobWrapper)
-            # The wrapper script will take as input all snakemake arguments, so we assume
-            # it contains something like `snakemake $@`
+            # The wrapper script will take as input all snakemake arguments,
+            # so we assume it contains something like `snakemake $@`
             job_args = self.format_job_exec(job).removeprefix("python -m snakemake ")
         else:
             job_exec = self.get_python_executable()
@@ -110,14 +110,23 @@ class Executor(RemoteExecutor):
             "request_cpus": str(job.threads),
         }
 
-
         # Supported universes for HTCondor
-        supported_universes = ["vanilla", "docker", "container", "scheduler", "local", "parallel", "grid", "java", "vm"]
-        if (universe := job.resources.get("universe")):
+        supported_universes = [
+            "vanilla",
+            "docker",
+            "container",
+            "scheduler",
+            "local",
+            "parallel",
+            "grid",
+            "java",
+            "vm",
+        ]
+        if universe := job.resources.get("universe"):
             if universe not in supported_universes:
                 raise WorkflowError(
                     f"The universe {universe} is not supported by HTCondor.",
-                    "See the HTCondor reference manual for a list of supported universes."
+                    "See the HTCondor reference manual for a list of supported universes.", # noqa
                 )
 
             submit_dict["universe"] = universe
@@ -125,10 +134,11 @@ class Executor(RemoteExecutor):
             # Check for container image requirement
             container_image = job.resources.get("container_image")
             if universe in ["docker", "container"] and not container_image:
-                raise WorkflowError("A container image must be specified when using the docker or container universe.")
+                raise WorkflowError(
+                    "A container image must be specified when using the docker or container universe." # noqa
+                )
             elif container_image:
                 submit_dict["container_image"] = container_image
-
 
         # If we're not using a shared filesystem, we need to setup transfers
         # for any job wrapper, config files, input files, etc
@@ -140,15 +150,21 @@ class Executor(RemoteExecutor):
             submit_dict["transfer_input_files"] = abspath(self.get_snakefile())
 
             if job.input:
-                # When snakemake passes its input args to the executable, it does so using the path relative
-                # to the specified input directory, e.g. `input/foo/bar`, so we need to transfer the top-most
-                # input directories the will contain any subdirectories/files needed by the job.
+                # When snakemake passes its input args to the executable,
+                # it does so using the path relative to the specified input directory,
+                # e.g. `input/foo/bar`,
+                # so we need to transfer the top-most input directories,
+                # they will contain any subdirectories/files needed by the job.
                 top_most_input_directories = {path.split(sep)[0] for path in job.input}
-                submit_dict["transfer_input_files"] += ", " + ", ".join(sorted(top_most_input_directories))
+                submit_dict["transfer_input_files"] += ", " + ", ".join(
+                    sorted(top_most_input_directories)
+                )
 
             if self.workflow.configfiles:
-                # Note that when we transfer the config file(s), we'll pass Condor an absolute path, but we need to
-                # modify the job args to use only the file name(s) when execution begins, because the configfile(s)
+                # Note that when we transfer the config file(s),
+                # we'll pass Condor an absolute path,
+                # but we need to modify the job args to use only the file name(s)
+                # when execution begins, because the configfile(s)
                 # will be accessed from the job's scratch dir.
                 config_fnames = []
                 for fpath in self.workflow.configfiles:
@@ -157,15 +173,25 @@ class Executor(RemoteExecutor):
                 config_arg = " ".join(config_fnames)
 
                 configfiles_pattern = r"--configfiles .*?(?=( --|$))"
-                submit_dict["arguments"] = re.sub(configfiles_pattern, f"--configfiles {config_arg}", submit_dict["arguments"])
+                submit_dict["arguments"] = re.sub(
+                    configfiles_pattern,
+                    f"--configfiles {config_arg}",
+                    submit_dict["arguments"],
+                )
 
-                submit_dict["transfer_input_files"] += ", " + ", ".join(str(path) for path in self.workflow.configfiles)
+                submit_dict["transfer_input_files"] += ", " + ", ".join(
+                    str(path) for path in self.workflow.configfiles
+                )
 
             if job.output:
                 # For outputs, we only care about the parent directory, which we'll tell
                 # HTCondor to transfer back to the AP.
-                top_most_output_directories = {path.split(sep)[0] for path in job.output}
-                submit_dict["transfer_output_files"] = ", ".join(sorted(top_most_output_directories))
+                top_most_output_directories = {
+                    path.split(sep)[0] for path in job.output
+                }
+                submit_dict["transfer_output_files"] = ", ".join(
+                    sorted(top_most_output_directories)
+                )
 
         # Basic commands
         if job.resources.get("getenv"):
@@ -283,7 +309,9 @@ class Executor(RemoteExecutor):
                         if job_status and len(job_status) >= 1:
                             job_status = [job_status[0]]
                         else:
-                            raise ValueError(f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}.")
+                            raise ValueError(
+                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}." # noqa
+                            )
                 except Exception as e:
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
                     # Assuming the job is still running and retry next time
