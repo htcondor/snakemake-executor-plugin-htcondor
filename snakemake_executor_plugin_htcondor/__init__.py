@@ -47,6 +47,16 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": True,
         },
     )
+    shared_fs_prefixes: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Comma-separated path prefixes shared between AP and EPs "
+            "(e.g., '/staging,/shared'). Files under these paths are accessed directly "
+            "without HTCondor transfer. Use with --shared-fs-usage none when only specific "
+            "paths (not all I/O) are shared.",
+            "required": False,
+        },
+    )
 
 # Required:
 # Specify common settings shared by various executors.
@@ -89,6 +99,129 @@ class Executor(RemoteExecutor):
 
         # jobDir: Directory where the job will tore log, output and error files.
         self.jobDir = self.workflow.executor_settings.jobdir
+
+        # Parse shared filesystem prefixes
+        self.shared_fs_prefixes = self._parse_shared_fs_prefixes(
+            self.workflow.executor_settings.shared_fs_prefixes
+        )
+
+        # Validate configuration and provide helpful guidance
+        if self.shared_fs_prefixes:
+            self._validate_shared_fs_configuration()
+
+    def _validate_shared_fs_configuration(self):
+        """Validate and warn about potentially confusing shared FS configuration."""
+        if not self.shared_fs_prefixes:
+            return  # No shared FS configured, nothing to validate
+
+        storage_settings = self.workflow.storage_settings.shared_fs_usage
+
+        # Check if user specified "none" but also configured shared prefixes
+        if not storage_settings:  # empty list or None means "none"
+            self.logger.info(
+                f"Detected partially shared filesystem: {', '.join(self.shared_fs_prefixes)}. "
+                "Files under these paths will be accessed directly at the Execution Point without HTCondor transfer."
+            )
+
+    def _parse_shared_fs_prefixes(self, prefixes_str: Optional[str]) -> List[str]:
+        """
+        Parse the comma-separated shared filesystem prefixes string.
+
+        Args:
+            prefixes_str: Comma-separated string of filesystem prefixes
+
+        Returns:
+            List of normalized filesystem prefix paths
+        """
+        if not prefixes_str:
+            return []
+
+        # Split by comma and strip whitespace/quotes
+        prefixes = [item.strip().strip("'\"") for item in prefixes_str.split(',') if item.strip()]
+
+        # Normalize paths to ensure they end with a separator for proper prefix matching
+        normalized = [join(prefix, '') for prefix in prefixes]
+
+        self.logger.debug(f"Parsed shared filesystem prefixes: {normalized}")
+        return normalized
+
+    def _get_files_for_transfer(self, job: JobExecutorInterface) -> tuple[List[str], List[str]]:
+        """
+        Determine which input and output files need to be transferred by HTCondor.
+
+        Files on shared filesystem prefixes are excluded from transfer.
+
+        Args:
+            job: The job being prepared for submission
+
+        Returns:
+            Tuple of (transfer_input_files, transfer_output_files) lists
+        """
+        transfer_input_files = []
+        transfer_output_files = []
+
+        # Add the snakefile to the transfer list if not on shared filesystem
+        snakefile = self.get_snakefile()
+        if not is_shared_fs(snakefile, self.shared_fs_prefixes):
+            transfer_input_files.append(str(snakefile))
+
+        # Process input files
+        if job.input:
+            inputs = [input for input in job.input]
+
+            # Preserve relative paths by default
+            if not job.resources.get("preserve_relative_paths", True):
+                inputs = {path.split(sep)[0] for path in inputs}
+
+            for path in inputs:
+                if path and not is_shared_fs(path, self.shared_fs_prefixes):
+                    transfer_input_files.append(str(path))
+
+        # Process config files
+        if self.workflow.configfiles:
+            for fpath in self.workflow.configfiles:
+                if fpath and not is_shared_fs(fpath, self.shared_fs_prefixes):
+                    transfer_input_files.append(str(fpath))
+
+        # Process output files
+        if job.output:
+            # Only transfer top-most output directories
+            top_most_output_directories = {path.split(sep)[0] for path in job.output}
+            for path in top_most_output_directories:
+                if path and not is_shared_fs(path, self.shared_fs_prefixes):
+                    transfer_output_files.append(str(path))
+
+        return transfer_input_files, transfer_output_files
+
+    def _prepare_config_files_for_transfer(self, job_args: str) -> tuple[str, List[str]]:
+        """
+        Prepare config files for transfer and adjust job arguments.
+
+        When config files are transferred, we need to modify the job arguments
+        to use only the file names (not full paths) since files will be in
+        the job's scratch directory on the EP.
+
+        Args:
+            job_args: Original job arguments string
+
+        Returns:
+            Tuple of (modified_job_args, config_file_names)
+        """
+        if not self.workflow.configfiles:
+            return job_args, []
+
+        config_fnames = []
+        for fpath in self.workflow.configfiles:
+            fname = basename(fpath)
+            config_fnames.append(fname)
+
+        # Modify job args to use only filenames
+        if config_fnames:
+            config_arg = " ".join(config_fnames)
+            configfiles_pattern = r"--configfiles .*?(?=( --|$))"
+            job_args = re.sub(configfiles_pattern, f"--configfiles {config_arg}", job_args)
+
+        return job_args, config_fnames
 
 
     def run_job(self, job: JobExecutorInterface):
@@ -149,65 +282,21 @@ class Executor(RemoteExecutor):
             submit_dict["should_transfer_files"] = "YES"
             submit_dict["when_to_transfer_output"] = "ON_EXIT"
 
-            # Grab our list of shared filesystem prefixes. We'll use these to determine
-            # which files HTCondor has to transfer to the EP, and which might already be accessible
-            shared_fs_prefixes = job.resources.get("shared_fs_prefixes", "")
-            shared_fs_prefixes = [item.strip() for item in shared_fs_prefixes.split(',') if item.strip()]
-            self.logger.debug(f"Shared filesystem prefixes: {shared_fs_prefixes}")
-            # Initialize the transfer input files list
-            transfer_input_files = []
+            # Determine which files need to be transferred
+            transfer_input_files, transfer_output_files = self._get_files_for_transfer(job)
 
-            # Add the snakefile to the transfer list
-            snakefile = self.get_snakefile()
-            if not is_shared_fs(snakefile, shared_fs_prefixes):
-                transfer_input_files.append(str(snakefile))
-
-            if job.input:
-                inputs = [input for input in job.input]
-
-                # When snakemake passes its input args to the executable, it does so using the path relative
-                # to the specified input directory, e.g. `input/foo/bar`. Therefore, we either need to transfer
-                # the inputs in a way that preserves paths relative to the input, or we need to transfer the entire
-                # input directory. By default, we'll preserve relative paths, but if the user specifies otherwise,
-                # we'll transfer the entire input directory.
-                if not job.resources.get("preserve_relative_paths", True):
-                    inputs = {path.split(sep)[0] for path in inputs}
-
-                for path in inputs:
-                    if path and not is_shared_fs(path, shared_fs_prefixes):
-                        transfer_input_files.append(str(path))
-
-            if self.workflow.configfiles:
-                # Note that when we transfer the config file(s), we'll pass Condor an absolute path, but we need to
-                # modify the job args to use only the file name(s) when execution begins, because the configfile(s)
-                # will be accessed from the job's scratch dir.
-                config_fnames = []
-                for fpath in self.workflow.configfiles:
-                    fname = basename(fpath)
-                    config_fnames.append(fname)
-                    if fpath and not is_shared_fs(fpath, shared_fs_prefixes):
-                        transfer_input_files.append(str(fpath))
-                config_arg = " ".join(config_fnames)
-
-                configfiles_pattern = r"--configfiles .*?(?=( --|$))"
-                submit_dict["arguments"] = re.sub(configfiles_pattern, f"--configfiles {config_arg}", submit_dict["arguments"])
+            # Adjust config file arguments if needed
+            submit_dict["arguments"], _ = self._prepare_config_files_for_transfer(
+                submit_dict["arguments"]
+            )
 
             if transfer_input_files:
                 self.logger.debug(f"Transfer input files: {transfer_input_files}")
                 submit_dict["transfer_input_files"] = ", ".join(sorted(transfer_input_files))
 
-            if job.output:
-                transfer_output_files = []
-                # For outputs, we only care about the parent directory, which we'll tell
-                # HTCondor to transfer back to the AP.
-                top_most_output_directories = {path.split(sep)[0] for path in job.output}
-                for path in top_most_output_directories:
-                    if path and not is_shared_fs(path, shared_fs_prefixes):
-                        transfer_output_files.append(str(path))
-                
-                if transfer_output_files:
-                    self.logger.debug(f"Transfer output files: {transfer_output_files}")
-                    submit_dict["transfer_output_files"] = ", ".join(sorted(transfer_output_files))
+            if transfer_output_files:
+                self.logger.debug(f"Transfer output files: {transfer_output_files}")
+                submit_dict["transfer_output_files"] = ", ".join(sorted(transfer_output_files))
 
         # Basic commands
         if job.resources.get("getenv"):
