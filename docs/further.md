@@ -53,11 +53,46 @@ snakemake --executor htcondor --shared-fs-usage none
 ```
 Doing so will invoke the HTCondor file transfer mechanism to move files from the AP to the EPs responsible for running each job.
 
+It is highly recommended that you use containers to bring a runtime execution environment along with the job, which at a minimum must contain Python and Snakemake.
+
 There is currently a limitation that files being transferred (e.g. Snakefile, config files, input data) must have the same scope on both the AP/EP, and in
 any Snakefile/Config file declarations. That is, if your configuration yaml file specifies an input directory called `my_data/`, the directory must be at
 the same location the job is submitted from, and it must arrive at the EP as `my_data/`. Because of this, a configured input directory like `../../my_data/`
 cannot work, because Snakemake at the EP will attempt to find `../../my_data` on its own filesystem where the directory will have been flattened to
 `my_data/`.
+
+### Partially Shared Filesystems
+
+In some computing environments, the Access Point and Execution Points may share certain filesystem paths (e.g., `/staging`) while other paths are local to each machine.
+The executor can be configured to recognize these shared paths and avoid transferring files that are already accessible on both the AP and EPs.
+
+To configure shared filesystem prefixes, use the `--htcondor-shared-fs-prefixes` command-line option or the `htcondor-shared-fs-prefixes` setting in your executor profile:
+
+```bash
+snakemake --executor htcondor --shared-fs-usage none --htcondor-shared-fs-prefixes "/staging,/shared"
+```
+
+Or in your profile configuration:
+
+```yaml
+executor: htcondor
+shared-fs-usage: none
+htcondor-shared-fs-prefixes: "/staging,/shared"
+```
+
+When prefixes are provided to `--htcondor-shared-fs-prefixes`, any input/output files under those paths will **not** be transferred by HTCondor, because the executor assumes these paths are accessible at both the AP and the EP.
+All files not found under these paths will be transferred by HTCondor as usual.
+
+**Example use case:**
+If your computing environment has `/staging` mounted on both AP and EPs, but your Snakefile and local input files are in `/home/user/workflow`:
+- Set `--htcondor-shared-fs-prefixes "/staging"`
+- Files in `/staging/data/` won't be transferred (already accessible)
+- Files in `input/` or `/home/user/` will be transferred to EPs
+
+**Important notes:**
+- Shared filesystem prefixes are only relevant when using `--shared-fs-usage none`
+- Multiple prefixes can be specified as a comma-separated list
+- Prefixes should be absolute paths
 
 ### Example of Non Shared Filesystem Usage
 
@@ -92,7 +127,7 @@ jobs: 30
 executor: htcondor
 configfile: my_config.yaml
 shared-fs-usage: none
-htcondor-job-dir: /path/to/MyHTCondorWorkflow/logs
+htcondor-jobdir: /path/to/MyHTCondorWorkflow/logs
 default-resources:
   job_wrapper: "wrapper.sh"
   container_image: "runtime_container.sif"
@@ -109,3 +144,47 @@ snakemake --profile my_profile
 with HTCondor job logs being placed in `MyHTCondorWorkflow/logs/`
 
 Note that exiting the terminal running the Snakemake workflow will currently abort all jobs.
+
+### Example with Partially Shared Filesystem
+
+If your HTCondor cluster/environment has a partially shared filesystem mounted between the AP and EPs, but your workflow directory is local to the AP:
+
+**Directory structure:**
+```
+/home/user/MyHTCondorWorkflow/    # Local to AP
+    ├── Snakefile
+    ├── my_config.yaml
+    ├── runtime_container.sif
+    ├── wrapper.sh
+    ├── local_input/
+    │   └── input-file1.txt
+    └── my_profile/
+        └── config.yaml
+
+/staging/shared_data/             # Shared between AP and EPs
+    └── input-file2.txt
+```
+
+Configure `my_profile/config.yaml` as:
+
+```yaml
+jobs: 30
+executor: htcondor
+configfile: my_config.yaml
+shared-fs-usage: none
+htcondor-jobdir: logs
+htcondor-shared-fs-prefixes: "/staging"
+default-resources:
+  job_wrapper: "wrapper.sh"
+  container_image: "runtime_container.sif"
+  universe: "container"
+  request_disk: "16GB"
+  request_memory: "8GB"
+```
+
+In this setup:
+- Files in `local_input/` (e.g., `input-file1.txt`) will be transferred by HTCondor
+- Files in `/staging/shared_data/` (e.g., `input-file2.txt`) will be accessed directly without transfer
+- The Snakefile and config files will be transferred
+- Output files written to local paths (e.g., `output/`) will be transferred back
+- Output files written to `/staging/results/` will be written directly without transfer back
