@@ -18,10 +18,6 @@ from os import makedirs, sep
 import re
 import sys
 
-"""
-Given a list of shared prefixes, determine whether a path is on a shared filesystem
-"""
-
 
 def is_shared_fs(in_path, shared_prefixes) -> bool:
     """
