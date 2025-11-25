@@ -13,7 +13,7 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 import traceback
-from os.path import join, basename, abspath, dirname
+from os.path import join, basename, abspath
 from os import makedirs, sep
 import re
 import sys
@@ -91,7 +91,6 @@ common_settings = CommonSettings(
     # indicate that the HTCondor executor can transfer its own files to the remote node
     can_transfer_local_files=True,
 )
-
 
 # Required:
 # Implementation of your executor
@@ -245,9 +244,9 @@ class Executor(RemoteExecutor):
         makedirs(self.jobDir, exist_ok=True)
 
         if jobWrapper := job.resources.get("job_wrapper"):
-            job_exec = jobWrapper
-            # The wrapper script will take as input all snakemake arguments, so we assume
-            # it contains something like `snakemake $@`
+            job_exec = basename(jobWrapper)
+            # The wrapper script will take as input all snakemake arguments,
+            # so we assume it contains something like `snakemake $@`
             job_args = self.format_job_exec(job).removeprefix("python -m snakemake ")
         else:
             job_exec = self.get_python_executable()
@@ -287,7 +286,7 @@ class Executor(RemoteExecutor):
             if universe not in supported_universes:
                 raise WorkflowError(
                     f"The universe {universe} is not supported by HTCondor.",
-                    "See the HTCondor reference manual for a list of supported universes.",
+                    "See the HTCondor reference manual for a list of supported universes.", # noqa
                 )
 
             submit_dict["universe"] = universe
@@ -296,7 +295,7 @@ class Executor(RemoteExecutor):
             container_image = job.resources.get("container_image")
             if universe in ["docker", "container"] and not container_image:
                 raise WorkflowError(
-                    "A container image must be specified when using the docker or container universe."
+                    "A container image must be specified when using the docker or container universe." # noqa
                 )
             elif container_image:
                 submit_dict["container_image"] = container_image
@@ -377,22 +376,27 @@ class Executor(RemoteExecutor):
         # Name the jobs in the queue something that tells us what the job is
         submit_dict["batch_name"] = f"{job.name}-{job.jobid}"
 
+        
         # Check any custom classads
         for key in job.resources.keys():
             if key.startswith("classad_"):
-                classad_key = "+" + key.removeprefix("classad_")
-                submit_dict[classad_key] = job.resources.get(key)
-
+                classad_key =  "+" + key.removeprefix("classad_")
+                value = job.resources.get(key)
+                # If the value is a string, HTCondor requires it to be quoted.
+                if isinstance(value, str):
+                    submit_dict[classad_key] = f'"{value}"'
+                else:
+                    submit_dict[classad_key] = value
         # HTCondor submit description
         self.logger.debug(f"HTCondor submit subscription: {submit_dict}")
         submit_description = htcondor.Submit(submit_dict)
-        submit_description.issue_credentials()
 
         # Client for HTCondor Schedduler
         schedd = htcondor.Schedd()
 
         # Submitting job to HTCondor
         try:
+            submit_description.issue_credentials()
             submit_result = schedd.submit(submit_description)
         except Exception as e:
             traceback.print_exc()
@@ -444,7 +448,7 @@ class Executor(RemoteExecutor):
                             job_status = [job_status[0]]
                         else:
                             raise ValueError(
-                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}."
+                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}." # noqa
                             )
                 except Exception as e:
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
