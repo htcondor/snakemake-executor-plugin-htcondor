@@ -21,15 +21,18 @@ import sys
 """
 Given a list of shared prefixes, determine whether a path is on a shared filesystem
 """
+
+
 def is_shared_fs(in_path, shared_prefixes) -> bool:
     """
     Check if the job is on a shared filesystem, as configured using the
     `shared_fs_prefixes` config for the executor
     """
-    normalized_prefixes = [join(prefix, '') for prefix in shared_prefixes]
-    normalized_path = join(in_path, '')
+    normalized_prefixes = [join(prefix, "") for prefix in shared_prefixes]
+    normalized_path = join(in_path, "")
 
     return any(normalized_path.startswith(prefix) for prefix in normalized_prefixes)
+
 
 # Optional:
 # Define additional settings for your executor.
@@ -57,6 +60,7 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": False,
         },
     )
+
 
 # Required:
 # Specify common settings shared by various executors.
@@ -87,6 +91,7 @@ common_settings = CommonSettings(
     # indicate that the HTCondor executor can transfer its own files to the remote node
     can_transfer_local_files=True,
 )
+
 
 # Required:
 # Implementation of your executor
@@ -137,15 +142,21 @@ class Executor(RemoteExecutor):
             return []
 
         # Split by comma and strip whitespace/quotes
-        prefixes = [item.strip().strip("'\"") for item in prefixes_str.split(',') if item.strip()]
+        prefixes = [
+            item.strip().strip("'\"")
+            for item in prefixes_str.split(",")
+            if item.strip()
+        ]
 
         # Normalize paths to ensure they end with a separator for proper prefix matching
-        normalized = [join(prefix, '') for prefix in prefixes]
+        normalized = [join(prefix, "") for prefix in prefixes]
 
         self.logger.debug(f"Parsed shared filesystem prefixes: {normalized}")
         return normalized
 
-    def _get_files_for_transfer(self, job: JobExecutorInterface) -> tuple[List[str], List[str]]:
+    def _get_files_for_transfer(
+        self, job: JobExecutorInterface
+    ) -> tuple[List[str], List[str]]:
         """
         Determine which input and output files need to be transferred by HTCondor.
 
@@ -193,7 +204,9 @@ class Executor(RemoteExecutor):
 
         return transfer_input_files, transfer_output_files
 
-    def _prepare_config_files_for_transfer(self, job_args: str) -> tuple[str, List[str]]:
+    def _prepare_config_files_for_transfer(
+        self, job_args: str
+    ) -> tuple[str, List[str]]:
         """
         Prepare config files for transfer and adjust job arguments.
 
@@ -219,10 +232,11 @@ class Executor(RemoteExecutor):
         if config_fnames:
             config_arg = " ".join(config_fnames)
             configfiles_pattern = r"--configfiles .*?(?=( --|$))"
-            job_args = re.sub(configfiles_pattern, f"--configfiles {config_arg}", job_args)
+            job_args = re.sub(
+                configfiles_pattern, f"--configfiles {config_arg}", job_args
+            )
 
         return job_args, config_fnames
-
 
     def run_job(self, job: JobExecutorInterface):
         # Submitting job to HTCondor
@@ -230,7 +244,7 @@ class Executor(RemoteExecutor):
         # Creating directory to store log, output and error files
         makedirs(self.jobDir, exist_ok=True)
 
-        if (jobWrapper := job.resources.get("job_wrapper")):
+        if jobWrapper := job.resources.get("job_wrapper"):
             job_exec = jobWrapper
             # The wrapper script will take as input all snakemake arguments, so we assume
             # it contains something like `snakemake $@`
@@ -257,14 +271,23 @@ class Executor(RemoteExecutor):
             "request_cpus": str(job.threads),
         }
 
-
         # Supported universes for HTCondor
-        supported_universes = ["vanilla", "docker", "container", "scheduler", "local", "parallel", "grid", "java", "vm"]
-        if (universe := job.resources.get("universe")):
+        supported_universes = [
+            "vanilla",
+            "docker",
+            "container",
+            "scheduler",
+            "local",
+            "parallel",
+            "grid",
+            "java",
+            "vm",
+        ]
+        if universe := job.resources.get("universe"):
             if universe not in supported_universes:
                 raise WorkflowError(
                     f"The universe {universe} is not supported by HTCondor.",
-                    "See the HTCondor reference manual for a list of supported universes."
+                    "See the HTCondor reference manual for a list of supported universes.",
                 )
 
             submit_dict["universe"] = universe
@@ -272,7 +295,9 @@ class Executor(RemoteExecutor):
             # Check for container image requirement
             container_image = job.resources.get("container_image")
             if universe in ["docker", "container"] and not container_image:
-                raise WorkflowError("A container image must be specified when using the docker or container universe.")
+                raise WorkflowError(
+                    "A container image must be specified when using the docker or container universe."
+                )
             elif container_image:
                 submit_dict["container_image"] = container_image
 
@@ -283,7 +308,9 @@ class Executor(RemoteExecutor):
             submit_dict["when_to_transfer_output"] = "ON_EXIT"
 
             # Determine which files need to be transferred
-            transfer_input_files, transfer_output_files = self._get_files_for_transfer(job)
+            transfer_input_files, transfer_output_files = self._get_files_for_transfer(
+                job
+            )
 
             # Adjust config file arguments if needed
             submit_dict["arguments"], _ = self._prepare_config_files_for_transfer(
@@ -292,11 +319,15 @@ class Executor(RemoteExecutor):
 
             if transfer_input_files:
                 self.logger.debug(f"Transfer input files: {transfer_input_files}")
-                submit_dict["transfer_input_files"] = ", ".join(sorted(transfer_input_files))
+                submit_dict["transfer_input_files"] = ", ".join(
+                    sorted(transfer_input_files)
+                )
 
             if transfer_output_files:
                 self.logger.debug(f"Transfer output files: {transfer_output_files}")
-                submit_dict["transfer_output_files"] = ", ".join(sorted(transfer_output_files))
+                submit_dict["transfer_output_files"] = ", ".join(
+                    sorted(transfer_output_files)
+                )
 
         # Basic commands
         if job.resources.get("getenv"):
@@ -412,7 +443,9 @@ class Executor(RemoteExecutor):
                         if job_status and len(job_status) >= 1:
                             job_status = [job_status[0]]
                         else:
-                            raise ValueError(f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}.")
+                            raise ValueError(
+                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}."
+                            )
                 except Exception as e:
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
                     # Assuming the job is still running and retry next time
