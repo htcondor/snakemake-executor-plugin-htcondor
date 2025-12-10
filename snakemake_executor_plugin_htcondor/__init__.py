@@ -88,6 +88,7 @@ common_settings = CommonSettings(
     can_transfer_local_files=True,
 )
 
+
 # Required:
 # Implementation of your executor
 class Executor(RemoteExecutor):
@@ -233,14 +234,31 @@ class Executor(RemoteExecutor):
 
         return job_args, config_fnames
 
-    def run_job(self, job: JobExecutorInterface):
-        # Submitting job to HTCondor
+    def _get_job_exec_and_args(self, job: JobExecutorInterface) -> tuple[str, str]:
+        """
+        Determine the executable and arguments for the HTCondor job.
 
-        # Creating directory to store log, output and error files
-        makedirs(self.jobDir, exist_ok=True)
+        When a job wrapper is specified, it becomes the executable and the
+        Snakemake arguments (minus the 'python -m snakemake' prefix) become
+        the arguments. The wrapper path is preserved as-is to support wrappers
+        in subdirectories (e.g., 'workflow/wrapper.sh').
 
-        if jobWrapper := job.resources.get("job_wrapper"):
-            job_exec = basename(jobWrapper)
+        When no wrapper is specified, Python is the executable and the full
+        Snakemake command (minus the python executable prefix) is used.
+
+        The returned arguments are sanitized for HTCondor compatibility.
+
+        Args:
+            job: The Snakemake job being prepared for submission
+
+        Returns:
+            Tuple of (executable_path, sanitized_job_arguments)
+        """
+        if job_wrapper := job.resources.get("job_wrapper"):
+            # Use the wrapper script as the executable.
+            # IMPORTANT: Preserve the full relative path (e.g., 'workflow/wrapper.sh')
+            # to support wrappers in subdirectories.
+            job_exec = job_wrapper
             # The wrapper script will take as input all snakemake arguments,
             # so we assume it contains something like `snakemake $@`
             job_args = self.format_job_exec(job).removeprefix("python -m snakemake ")
@@ -248,13 +266,35 @@ class Executor(RemoteExecutor):
             job_exec = self.get_python_executable()
             job_args = self.format_job_exec(job).removeprefix(job_exec + " ")
 
-        # HTCondor cannot handle single quotes
+        # Sanitize arguments before returning
+        job_args = self._sanitize_job_args(job_args)
+
+        return job_exec, job_args
+
+    def _sanitize_job_args(self, job_args: str) -> str:
+        """
+        Sanitize job arguments for HTCondor compatibility.
+
+        HTCondor cannot handle single quotes in arguments, so they are removed.
+
+        Args:
+            job_args: The job arguments string
+
+        Returns:
+            Sanitized job arguments string
+        """
         if "'" in job_args:
             job_args = job_args.replace("'", "")
-            self.logger.warning(
-                "The job argument contains a single quote. "
-                "Removing it to avoid issues with HTCondor."
-            )
+        return job_args
+
+    def run_job(self, job: JobExecutorInterface):
+        # Submitting job to HTCondor
+
+        # Creating directory to store log, output and error files
+        makedirs(self.jobDir, exist_ok=True)
+
+        # Get the executable and arguments for this job
+        job_exec, job_args = self._get_job_exec_and_args(job)
 
         # Creating submit dictionary which is passed to htcondor.Submit
         submit_dict = {
@@ -282,7 +322,7 @@ class Executor(RemoteExecutor):
             if universe not in supported_universes:
                 raise WorkflowError(
                     f"The universe {universe} is not supported by HTCondor.",
-                    "See the HTCondor reference manual for a list of supported universes.", # noqa
+                    "See the HTCondor reference manual for a list of supported universes.",  # noqa
                 )
 
             submit_dict["universe"] = universe
@@ -291,7 +331,7 @@ class Executor(RemoteExecutor):
             container_image = job.resources.get("container_image")
             if universe in ["docker", "container"] and not container_image:
                 raise WorkflowError(
-                    "A container image must be specified when using the docker or container universe." # noqa
+                    "A container image must be specified when using the docker or container universe."  # noqa
                 )
             elif container_image:
                 submit_dict["container_image"] = container_image
@@ -372,11 +412,10 @@ class Executor(RemoteExecutor):
         # Name the jobs in the queue something that tells us what the job is
         submit_dict["batch_name"] = f"{job.name}-{job.jobid}"
 
-        
         # Check any custom classads
         for key in job.resources.keys():
             if key.startswith("classad_"):
-                classad_key =  "+" + key.removeprefix("classad_")
+                classad_key = "+" + key.removeprefix("classad_")
                 value = job.resources.get(key)
                 # If the value is a string, HTCondor requires it to be quoted.
                 if isinstance(value, str):
@@ -444,7 +483,7 @@ class Executor(RemoteExecutor):
                             job_status = [job_status[0]]
                         else:
                             raise ValueError(
-                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}." # noqa
+                                f"No job status found in history for HTCondor job with Cluster ID {current_job.external_jobid}."  # noqa
                             )
                 except Exception as e:
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
