@@ -13,8 +13,8 @@ A user reported that they couldn't use a job wrapper nested in a subdirectory
 basename() was being used on the wrapper path, stripping the directory.
 """
 
-import pytest
-from unittest.mock import Mock, patch
+
+from unittest.mock import Mock
 from snakemake_executor_plugin_htcondor import Executor
 
 
