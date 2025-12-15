@@ -13,7 +13,7 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 import traceback
-from os.path import join, basename, abspath
+from os.path import join, basename, abspath, isabs, relpath
 from os import makedirs, sep
 import re
 import sys
@@ -184,11 +184,8 @@ class Executor(RemoteExecutor):
                 if path and not is_shared_fs(path, self.shared_fs_prefixes):
                     transfer_input_files.append(str(path))
 
-        # Process config files
-        if self.workflow.configfiles:
-            for fpath in self.workflow.configfiles:
-                if fpath and not is_shared_fs(fpath, self.shared_fs_prefixes):
-                    transfer_input_files.append(str(fpath))
+        # NOTE: Config files are handled separately by _prepare_config_files_for_transfer()
+        # which returns relative paths for both the job arguments and the transfer list.
 
         # Process output files
         if job.output:
@@ -201,42 +198,108 @@ class Executor(RemoteExecutor):
         return transfer_input_files, transfer_output_files
 
     def _prepare_config_files_for_transfer(
-        self, job_args: str
+        self, job_args: str, shared_fs_prefixes: List[str]
     ) -> tuple[str, List[str]]:
         """
         Prepare config files for transfer and adjust job arguments.
 
-        When config files are transferred, we need to modify the job arguments
-        to use only the file names (not full paths) since files will be in
-        the job's scratch directory on the EP.
+        From the Snakemake documentation:
+        "The given path is interpreted relative to the working directory,
+        not relative to the location of the snakefile that contains the statement."
+
+        Snakemake internally converts relative config paths to absolute paths.
+        We convert them back to relative paths from the working directory so that:
+        1. HTCondor preserves the directory structure with preserve_relative_paths=True
+        2. The --configfiles argument matches the transferred file locations
+
+        This function is the single source of truth for config file path handling.
+        The returned paths should be used for BOTH the job arguments AND the
+        transfer_input_files list.
+
+        Shared filesystem checking is done using the ORIGINAL absolute path
+        (before conversion to relative), since shared FS prefixes are absolute
+        paths like '/staging/' or '/shared/'.
 
         Args:
             job_args: Original job arguments string
+            shared_fs_prefixes: List of shared filesystem path prefixes
 
         Returns:
-            Tuple of (modified_job_args, config_file_names)
+            Tuple of (modified_job_args, config_file_paths_for_transfer)
+            - modified_job_args: Job arguments with updated --configfiles paths
+            - config_file_paths_for_transfer: Relative paths to add to transfer_input_files
+              (excludes files on shared filesystems)
         """
         if not self.workflow.configfiles:
+            self.logger.debug("No config files to process")
             return job_args, []
 
-        config_fnames = []
-        for fpath in self.workflow.configfiles:
-            fname = basename(fpath)
-            config_fnames.append(fname)
+        # Get the working directory where Snakemake was invoked.
+        # Snakemake converts relative config paths to absolute paths internally,
+        # so we need to convert them back to relative paths for HTCondor transfer.
+        workdir = self.workflow.workdir_init
+        self.logger.debug(f"Processing config files with workdir_init: {workdir}")
 
-        # Modify job args to use only filenames
-        if config_fnames:
-            config_arg = " ".join(config_fnames)
+        config_paths_for_args = []  # All config paths (for --configfiles argument)
+        config_paths_for_transfer = (
+            []
+        )  # Only non-shared-FS paths (for transfer_input_files)
+
+        for fpath in self.workflow.configfiles:
+            fpath_str = str(fpath)
+
+            # Check if this config file is on a shared filesystem
+            on_shared_fs = is_shared_fs(fpath_str, shared_fs_prefixes)
+
+            if on_shared_fs:
+                # Shared FS: Keep the absolute path in args (Snakemake accesses it directly)
+                # and do NOT add to transfer list
+                self.logger.debug(
+                    f"Config file on shared FS (keeping absolute path): {fpath_str}"
+                )
+                config_paths_for_args.append(fpath_str)
+            else:
+                # Non-shared FS: Convert to relative path for args (matches where HTCondor
+                # will place the file) and add to transfer list
+                if isabs(fpath_str):
+                    # Snakemake converts relative paths to absolute. Convert back to
+                    # relative from the working directory so HTCondor preserves the
+                    # directory structure with preserve_relative_paths=True.
+                    relative_path = relpath(fpath_str, workdir)
+                    self.logger.debug(
+                        f"Config file converted to relative path: {fpath_str} -> {relative_path}"
+                    )
+                else:
+                    # Already relative - keep as-is
+                    relative_path = fpath_str
+                    self.logger.debug(
+                        f"Config file already relative (keeping as-is): {relative_path}"
+                    )
+
+                config_paths_for_args.append(relative_path)
+                config_paths_for_transfer.append(relative_path)
+
+        # Modify job args to use the appropriate paths
+        if config_paths_for_args:
+            config_arg = " ".join(config_paths_for_args)
             configfiles_pattern = r"--configfiles .*?(?=( --|$))"
             job_args = re.sub(
                 configfiles_pattern, f"--configfiles {config_arg}", job_args
             )
+            self.logger.debug(
+                f"Updated --configfiles argument to: --configfiles {config_arg}"
+            )
 
-        return job_args, config_fnames
+        self.logger.debug(f"Config files to transfer: {config_paths_for_transfer}")
+        return job_args, config_paths_for_transfer
 
-    def _get_job_exec_and_args(self, job: JobExecutorInterface) -> tuple[str, str]:
+    def _get_base_exec_and_args(self, job: JobExecutorInterface) -> tuple[str, str]:
         """
-        Determine the executable and arguments for the HTCondor job.
+        Get the base executable and arguments for the HTCondor job.
+
+        This is an internal helper that returns the initial executable and arguments.
+        The arguments may be further modified by _get_exec_args_and_transfer_files()
+        to handle config file paths for HTCondor transfer.
 
         When a job wrapper is specified, it becomes the executable and the
         Snakemake arguments (minus the 'python -m snakemake' prefix) become
@@ -287,14 +350,93 @@ class Executor(RemoteExecutor):
             job_args = job_args.replace("'", "")
         return job_args
 
+    def _get_exec_args_and_transfer_files(
+        self, job: JobExecutorInterface, needs_transfer: bool
+    ) -> tuple[str, str, List[str], List[str]]:
+        """
+        Get the executable, arguments, and transfer file lists for a job.
+
+        This method handles three filesystem sharing modes:
+
+        1. Full shared FS (needs_transfer=False):
+           AP and EP share a filesystem. Absolute paths work everywhere,
+           no files need to be transferred. Arguments are returned unchanged.
+
+        2. No shared FS (needs_transfer=True, shared_fs_prefixes=[]):
+           AP and EP share nothing. All files must be transferred from AP to EP.
+           Paths are converted to relative so HTCondor preserves directory structure.
+
+        3. Partial shared FS (needs_transfer=True, shared_fs_prefixes=['/staging', ...]):
+           AP and EP share specific paths (e.g., /staging). Files under shared
+           prefixes keep absolute paths and are NOT transferred. Other files use
+           relative paths and ARE transferred.
+
+        Args:
+            job: The Snakemake job being prepared for submission
+            needs_transfer: Whether file transfer is needed (False for full shared FS)
+
+        Returns:
+            Tuple of (executable, final_arguments, transfer_input_files, transfer_output_files)
+        """
+        # Get base executable and arguments
+        job_exec, job_args = self._get_base_exec_and_args(job)
+        self.logger.debug(f"Base executable: {job_exec}")
+        self.logger.debug(f"Base arguments: {job_args}")
+
+        # Mode 1: Full shared filesystem - no transfer preparation needed
+        if not needs_transfer:
+            self.logger.debug(
+                "Full shared filesystem mode - skipping transfer preparation"
+            )
+            return job_exec, job_args, [], []
+
+        # Modes 2 & 3: Need to prepare files for transfer
+        if self.shared_fs_prefixes:
+            self.logger.debug(
+                f"Partial shared filesystem mode - shared prefixes: {self.shared_fs_prefixes}"
+            )
+        else:
+            self.logger.debug(
+                "No shared filesystem mode - all files will be transferred"
+            )
+
+        # Get files that need to be transferred (excludes config files)
+        transfer_input_files, transfer_output_files = self._get_files_for_transfer(job)
+
+        # Prepare config files - this modifies the arguments to use correct paths
+        # and returns the list of config files to transfer
+        job_args, config_paths = self._prepare_config_files_for_transfer(
+            job_args, self.shared_fs_prefixes
+        )
+
+        # Add config files to the transfer input list
+        transfer_input_files.extend(config_paths)
+
+        self.logger.debug(f"Final arguments: {job_args}")
+        self.logger.debug(
+            f"Final transfer_input_files ({len(transfer_input_files)}): {transfer_input_files}"
+        )
+        self.logger.debug(
+            f"Final transfer_output_files ({len(transfer_output_files)}): {transfer_output_files}"
+        )
+
+        return job_exec, job_args, transfer_input_files, transfer_output_files
+
     def run_job(self, job: JobExecutorInterface):
         # Submitting job to HTCondor
 
         # Creating directory to store log, output and error files
         makedirs(self.jobDir, exist_ok=True)
 
-        # Get the executable and arguments for this job
-        job_exec, job_args = self._get_job_exec_and_args(job)
+        # Determine if file transfer is needed based on shared filesystem configuration
+        # When shared_fs_usage is set (truthy), AP and EP share a filesystem
+        # When shared_fs_usage is empty/none, files must be transferred
+        needs_transfer = not self.workflow.storage_settings.shared_fs_usage
+
+        # Get executable, arguments (with adjusted config paths), and transfer file lists
+        job_exec, job_args, transfer_input_files, transfer_output_files = (
+            self._get_exec_args_and_transfer_files(job, needs_transfer)
+        )
 
         # Creating submit dictionary which is passed to htcondor.Submit
         submit_dict = {
@@ -341,16 +483,6 @@ class Executor(RemoteExecutor):
         if not self.workflow.storage_settings.shared_fs_usage:
             submit_dict["should_transfer_files"] = "YES"
             submit_dict["when_to_transfer_output"] = "ON_EXIT"
-
-            # Determine which files need to be transferred
-            transfer_input_files, transfer_output_files = self._get_files_for_transfer(
-                job
-            )
-
-            # Adjust config file arguments if needed
-            submit_dict["arguments"], _ = self._prepare_config_files_for_transfer(
-                submit_dict["arguments"]
-            )
 
             if transfer_input_files:
                 self.logger.debug(f"Transfer input files: {transfer_input_files}")

@@ -2,7 +2,6 @@
 Unit tests for shared filesystem prefix functionality in HTCondor executor.
 """
 
-import pytest
 from unittest.mock import Mock, MagicMock, patch
 from os.path import join
 from snakemake_executor_plugin_htcondor import is_shared_fs, ExecutorSettings, Executor
@@ -215,8 +214,12 @@ class TestGetFilesForTransfer:
         assert len([f for f in transfer_output if f == "output"]) == 1
         assert "/staging/shared-output/result.txt" not in transfer_output
 
-    def test_config_files_handling(self):
-        """Test that config files are properly handled."""
+    def test_config_files_not_handled_here(self):
+        """Test that config files are NOT handled by _get_files_for_transfer.
+
+        Config files are now handled separately by _prepare_config_files_for_transfer()
+        which handles both the transfer list and the --configfiles arguments together.
+        """
         self.executor.workflow.configfiles = [
             "/home/user/config.yaml",
             "/staging/shared-config.yaml",
@@ -224,8 +227,9 @@ class TestGetFilesForTransfer:
 
         transfer_input, _ = self.executor._get_files_for_transfer(self.job)
 
-        # Home config should be transferred, staging config should not
-        assert "/home/user/config.yaml" in transfer_input
+        # Config files should NOT be in the transfer list from this method
+        # They are handled by _prepare_config_files_for_transfer() instead
+        assert "/home/user/config.yaml" not in transfer_input
         assert "/staging/shared-config.yaml" not in transfer_input
 
     def test_empty_job(self):
@@ -239,13 +243,21 @@ class TestGetFilesForTransfer:
         assert transfer_output == []
 
 
-class TestPrepareConfigFilesForTransfer:
-    """Test the _prepare_config_files_for_transfer method."""
+class TestPrepareConfigFilesForTransferBasic:
+    """Basic tests for _prepare_config_files_for_transfer method.
+
+    Note: More comprehensive tests covering shared FS handling are in
+    test_config_file_paths.py.
+    """
 
     def setup_method(self):
         """Setup mock executor for testing."""
         self.executor = Mock(spec=Executor)
         self.executor.workflow = Mock()
+        self.executor.logger = Mock()
+        self.executor.workflow.workdir_init = (
+            "/home/user"  # Required for relpath calculation
+        )
 
         # Bind the actual method to our mock
         self.executor._prepare_config_files_for_transfer = (
@@ -258,7 +270,7 @@ class TestPrepareConfigFilesForTransfer:
         job_args = "--target-jobs test --cores 1"
 
         modified_args, config_names = self.executor._prepare_config_files_for_transfer(
-            job_args
+            job_args, shared_fs_prefixes=[]
         )
 
         assert modified_args == job_args
@@ -270,7 +282,7 @@ class TestPrepareConfigFilesForTransfer:
         job_args = "--target-jobs test --configfiles /home/user/config.yaml --cores 1"
 
         modified_args, config_names = self.executor._prepare_config_files_for_transfer(
-            job_args
+            job_args, shared_fs_prefixes=[]
         )
 
         assert "config.yaml" in modified_args
@@ -286,7 +298,7 @@ class TestPrepareConfigFilesForTransfer:
         job_args = "--target-jobs test --configfiles /home/user/config1.yaml /home/user/config2.yaml --cores 1"
 
         modified_args, config_names = self.executor._prepare_config_files_for_transfer(
-            job_args
+            job_args, shared_fs_prefixes=[]
         )
 
         assert "config1.yaml" in modified_args
