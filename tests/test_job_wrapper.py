@@ -13,13 +13,12 @@ A user reported that they couldn't use a job wrapper nested in a subdirectory
 basename() was being used on the wrapper path, stripping the directory.
 """
 
-
 from unittest.mock import Mock
 from snakemake_executor_plugin_htcondor import Executor
 
 
-class TestGetJobExecAndArgs:
-    """Test the _get_job_exec_and_args helper method."""
+class TestGetBaseExecAndArgs:
+    """Test the _get_base_exec_and_args helper method."""
 
     def setup_method(self):
         """Setup mock executor for testing."""
@@ -27,8 +26,8 @@ class TestGetJobExecAndArgs:
         self.executor.logger = Mock()
 
         # Bind the actual methods to our mock
-        self.executor._get_job_exec_and_args = Executor._get_job_exec_and_args.__get__(
-            self.executor, Executor
+        self.executor._get_base_exec_and_args = (
+            Executor._get_base_exec_and_args.__get__(self.executor, Executor)
         )
         self.executor._sanitize_job_args = Executor._sanitize_job_args.__get__(
             self.executor, Executor
@@ -51,7 +50,7 @@ class TestGetJobExecAndArgs:
         job.resources = Mock()
         job.resources.get = Mock(return_value="workflow/wrapper.sh")
 
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         # The executable MUST be the full relative path
         assert job_exec == "workflow/wrapper.sh"
@@ -66,7 +65,7 @@ class TestGetJobExecAndArgs:
             return_value="workflow/scripts/wrappers/htcondor_wrapper.sh"
         )
 
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == "workflow/scripts/wrappers/htcondor_wrapper.sh"
 
@@ -76,7 +75,7 @@ class TestGetJobExecAndArgs:
         job.resources = Mock()
         job.resources.get = Mock(return_value="wrapper.sh")
 
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == "wrapper.sh"
 
@@ -86,7 +85,7 @@ class TestGetJobExecAndArgs:
         job.resources = Mock()
         job.resources.get = Mock(return_value=None)  # No wrapper
 
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == "python"
         self.executor.get_python_executable.assert_called_once()
@@ -100,7 +99,7 @@ class TestGetJobExecAndArgs:
             return_value="python -m snakemake --snakefile Snakefile --cores 1 --target all"
         )
 
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        _, job_args = self.executor._get_base_exec_and_args(job)
 
         assert job_args == "--snakefile Snakefile --cores 1 --target all"
         assert "python -m snakemake" not in job_args
@@ -115,7 +114,7 @@ class TestGetJobExecAndArgs:
             return_value="/usr/bin/python3 -m snakemake --snakefile Snakefile"
         )
 
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        job_exec, job_args = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == "/usr/bin/python3"
         assert job_args == "-m snakemake --snakefile Snakefile"
@@ -174,7 +173,7 @@ class TestJobWrapperIntegration:
     Integration tests that verify the complete flow of job wrapper handling.
 
     These tests use more realistic mock setups to verify the interaction
-    between _get_job_exec_and_args and the rest of the executor.
+    between _get_base_exec_and_args and the rest of the executor.
     """
 
     def setup_method(self):
@@ -183,8 +182,8 @@ class TestJobWrapperIntegration:
         self.executor.logger = Mock()
 
         # Bind actual methods
-        self.executor._get_job_exec_and_args = Executor._get_job_exec_and_args.__get__(
-            self.executor, Executor
+        self.executor._get_base_exec_and_args = (
+            Executor._get_base_exec_and_args.__get__(self.executor, Executor)
         )
         self.executor._sanitize_job_args = Executor._sanitize_job_args.__get__(
             self.executor, Executor
@@ -207,7 +206,7 @@ class TestJobWrapperIntegration:
             return_value="python -m snakemake --snakefile workflow/Snakefile --cores 1"
         )
 
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        job_exec, job_args = self.executor._get_base_exec_and_args(job)
 
         # Critical: wrapper path must be preserved
         assert job_exec == "workflow/wrapper.sh"
@@ -215,7 +214,7 @@ class TestJobWrapperIntegration:
         assert "--snakefile workflow/Snakefile" in job_args
 
     def test_args_are_sanitized_automatically(self):
-        """Test that _get_job_exec_and_args returns sanitized arguments."""
+        """Test that _get_base_exec_and_args returns sanitized arguments."""
         job = Mock()
         job.resources = Mock()
         job.resources.get = Mock(return_value="workflow/wrapper.sh")
@@ -224,7 +223,7 @@ class TestJobWrapperIntegration:
         )
 
         # Get executable and args - args should already be sanitized
-        job_exec, job_args = self.executor._get_job_exec_and_args(job)
+        job_exec, job_args = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == "workflow/wrapper.sh"
         # Single quotes should already be removed
@@ -239,8 +238,8 @@ class TestJobWrapperEdgeCases:
         """Setup mock executor."""
         self.executor = Mock(spec=Executor)
         self.executor.logger = Mock()
-        self.executor._get_job_exec_and_args = Executor._get_job_exec_and_args.__get__(
-            self.executor, Executor
+        self.executor._get_base_exec_and_args = (
+            Executor._get_base_exec_and_args.__get__(self.executor, Executor)
         )
         self.executor._sanitize_job_args = Executor._sanitize_job_args.__get__(
             self.executor, Executor
@@ -256,7 +255,7 @@ class TestJobWrapperEdgeCases:
         job.resources = Mock()
         job.resources.get = Mock(return_value="my workflow/wrapper script.sh")
 
-        job_exec, _ = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == "my workflow/wrapper script.sh"
 
@@ -266,7 +265,7 @@ class TestJobWrapperEdgeCases:
         job.resources = Mock()
         job.resources.get = Mock(return_value=".hidden/scripts/wrapper.sh")
 
-        job_exec, _ = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == ".hidden/scripts/wrapper.sh"
 
@@ -276,7 +275,7 @@ class TestJobWrapperEdgeCases:
         job.resources = Mock()
         job.resources.get = Mock(return_value="/home/user/workflow/wrapper.sh")
 
-        job_exec, _ = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         assert job_exec == "/home/user/workflow/wrapper.sh"
 
@@ -286,7 +285,7 @@ class TestJobWrapperEdgeCases:
         job.resources = Mock()
         job.resources.get = Mock(return_value="")  # Empty string is falsy
 
-        job_exec, _ = self.executor._get_job_exec_and_args(job)
+        job_exec, _ = self.executor._get_base_exec_and_args(job)
 
         # Empty string is falsy, so should use Python
         assert job_exec == "python"
