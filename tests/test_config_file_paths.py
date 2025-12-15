@@ -10,8 +10,7 @@ Test scenarios cover --shared-fs-usage none with various combinations of
 shared filesystem prefixes and config file locations.
 """
 
-from unittest.mock import Mock, MagicMock, patch
-from os.path import join
+from unittest.mock import Mock, MagicMock
 from snakemake_executor_plugin_htcondor import Executor
 
 
@@ -275,17 +274,38 @@ class TestPrepareConfigFilesForTransfer:
 
     def test_shared_fs_prefix_partial_match_rejected(self):
         """Test that partial prefix matches don't count as shared FS."""
+        import pytest
+        from snakemake.exceptions import WorkflowError
+
         # /staging2/ should NOT match /staging/ prefix
         self.executor.workflow.configfiles = ["/staging2/config.yaml"]
         job_args = "--configfiles /staging2/config.yaml --cores 1"
 
+        # This should raise an error because /staging2/ is not on shared FS
+        # and is outside the working directory
+        with pytest.raises(WorkflowError) as exc_info:
+            self.executor._prepare_config_files_for_transfer(
+                job_args, shared_fs_prefixes=["/staging/"]
+            )
+
+        error_msg = str(exc_info.value)
+        assert "/staging2/config.yaml" in error_msg
+        assert "outside the working directory" in error_msg
+
+    def test_shared_fs_config_can_be_outside_workdir(self):
+        """Shared FS config files can be outside workdir since they use absolute paths."""
+        # Config on shared FS, but outside working directory - this is OK!
+        self.executor.workflow.configfiles = ["/staging/shared_config.yaml"]
+        job_args = "--configfiles /staging/shared_config.yaml --cores 1"
+
+        # Should succeed without error
         modified_args, config_paths = self.executor._prepare_config_files_for_transfer(
             job_args, shared_fs_prefixes=["/staging/"]
         )
 
-        # /staging2/ is NOT on shared FS, so it should be converted to relative
-        # (though this will be a weird relative path since it's outside workdir)
-        assert config_paths != []  # Should be in transfer list
+        # Shared FS file keeps absolute path and is NOT transferred
+        assert config_paths == []
+        assert "--configfiles /staging/shared_config.yaml" in modified_args
 
 
 class TestConfigFilePathsIntegration:
@@ -596,3 +616,112 @@ class TestFilesystemModes:
         assert (
             len(prepare_config_called) == 0
         ), "_prepare_config_files_for_transfer should not be called"
+
+
+class TestConfigFilesOutsideWorkdir:
+    """Test handling of config files outside the working directory."""
+
+    def setup_method(self):
+        """Create a mock executor for each test."""
+        self.executor = MagicMock(spec=Executor)
+        self.executor.workflow = MagicMock()
+        self.executor.workflow.workdir_init = "/home/user/project"
+        self.executor.logger = MagicMock()
+
+        # Bind the method to test
+        self.executor._prepare_config_files_for_transfer = (
+            Executor._prepare_config_files_for_transfer.__get__(self.executor, Executor)
+        )
+
+    def test_config_outside_workdir_raises_error(self):
+        """
+        When a config file is outside workdir_init, an error should be raised.
+
+        This addresses the concern that relpath() will generate paths with '../'
+        components, which cannot be transferred correctly with HTCondor.
+        """
+        import pytest
+        from snakemake.exceptions import WorkflowError
+
+        # Config file is outside the working directory
+        self.executor.workflow.configfiles = ["/home/user/other_project/config.yaml"]
+        job_args = "--configfiles /home/user/other_project/config.yaml --cores all"
+
+        # Should raise WorkflowError
+        with pytest.raises(WorkflowError) as exc_info:
+            self.executor._prepare_config_files_for_transfer(
+                job_args, shared_fs_prefixes=[]  # No shared FS
+            )
+
+        error_msg = str(exc_info.value)
+        assert "/home/user/other_project/config.yaml" in error_msg
+        assert "outside the working directory" in error_msg
+        assert "directory that is above all config files" in error_msg
+
+    def test_config_inside_workdir_no_error(self):
+        """
+        When a config file is inside workdir_init, no error should be raised.
+        """
+        self.executor.workflow.configfiles = ["/home/user/project/workflow/config.yaml"]
+        job_args = "--configfiles /home/user/project/workflow/config.yaml --cores all"
+
+        # Should succeed without error
+        modified_args, transfer_configs = (
+            self.executor._prepare_config_files_for_transfer(
+                job_args, shared_fs_prefixes=[]  # No shared FS
+            )
+        )
+
+        # Verify normal relative path (no ../)
+        assert transfer_configs == ["workflow/config.yaml"]
+        assert "--configfiles workflow/config.yaml" in modified_args
+
+    def test_multiple_configs_some_outside_workdir(self):
+        """
+        When multiple config files exist, error should be raised for first one outside workdir.
+        """
+        import pytest
+        from snakemake.exceptions import WorkflowError
+
+        self.executor.workflow.configfiles = [
+            "/home/user/project/workflow/config.yaml",  # Inside
+            "/home/user/other/external.yaml",  # Outside - will trigger error
+            "/home/user/project/params.yaml",  # Inside
+        ]
+        job_args = (
+            "--configfiles /home/user/project/workflow/config.yaml "
+            "/home/user/other/external.yaml /home/user/project/params.yaml --cores all"
+        )
+
+        # Should raise error on first file outside workdir
+        with pytest.raises(WorkflowError) as exc_info:
+            self.executor._prepare_config_files_for_transfer(
+                job_args, shared_fs_prefixes=[]  # No shared FS
+            )
+
+        error_msg = str(exc_info.value)
+        assert "/home/user/other/external.yaml" in error_msg
+
+    def test_already_relative_path_with_dotdot_raises_error(self):
+        """
+        When a config file is already relative and starts with '..', error should be raised.
+
+        This catches cases where users provide relative paths like '../config.yaml'
+        that would escape the working directory.
+        """
+        import pytest
+        from snakemake.exceptions import WorkflowError
+
+        # Config file is already a relative path starting with ..
+        self.executor.workflow.configfiles = ["../external/config.yaml"]
+        job_args = "--configfiles ../external/config.yaml --cores all"
+
+        # Should raise WorkflowError
+        with pytest.raises(WorkflowError) as exc_info:
+            self.executor._prepare_config_files_for_transfer(
+                job_args, shared_fs_prefixes=[]  # No shared FS
+            )
+
+        error_msg = str(exc_info.value)
+        assert "../external/config.yaml" in error_msg
+        assert "outside the working directory" in error_msg

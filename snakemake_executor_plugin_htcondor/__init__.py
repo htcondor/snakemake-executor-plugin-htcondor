@@ -13,10 +13,9 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 import traceback
-from os.path import join, basename, abspath, isabs, relpath
+from os.path import join, isabs, relpath
 from os import makedirs, sep
 import re
-import sys
 
 
 def is_shared_fs(in_path, shared_prefixes) -> bool:
@@ -230,6 +229,8 @@ class Executor(RemoteExecutor):
             - config_file_paths_for_transfer: Relative paths to add to transfer_input_files
               (excludes files on shared filesystems)
         """
+        assert isinstance(shared_fs_prefixes, list), "shared_fs_prefixes must be a list"
+
         if not self.workflow.configfiles:
             self.logger.debug("No config files to process")
             return job_args, []
@@ -274,6 +275,21 @@ class Executor(RemoteExecutor):
                     relative_path = fpath_str
                     self.logger.debug(
                         f"Config file already relative (keeping as-is): {relative_path}"
+                    )
+
+                # Error if config file path escapes the working directory (uses ../ paths)
+                # This applies to both converted and already-relative paths.
+                # This is an error because we can't permit a relative path that would "escape"
+                # the job's scratch directory on the EP. We require that all paths are under
+                # the working/submit directory.
+                if relative_path.startswith(".."):
+                    raise WorkflowError(
+                        f"Config file '{fpath_str}' is outside the working directory "
+                        f"'{workdir}'. HTCondor cannot transfer files using relative paths "
+                        f"that navigate above the submit directory (paths starting with '../'). "
+                        f"Please submit your workflow from a directory that is above all config files, "
+                        f"or place the config file on a shared filesystem accessible to both the Access Point "
+                        f"and Execution Points."
                     )
 
                 config_paths_for_args.append(relative_path)
