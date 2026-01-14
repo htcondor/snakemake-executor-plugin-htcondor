@@ -96,7 +96,7 @@ jobs:
         run: su -c "poetry install" submituser
 
       - name: Run pytest
-        run: su -c "poetry run coverage run -m pytest tests/tests.py -vvv" submituser
+        run: su -c "poetry run coverage run -m pytest tests/ -vvv" submituser
 
       - name: Check HTCondor logs
         run: |
