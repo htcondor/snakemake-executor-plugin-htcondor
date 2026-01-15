@@ -1,0 +1,43 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: check-added-large-files
+        args: ['--maxkb=1024']
+    -   id: end-of-file-fixer
+    -   id: check-yaml
+    -   id: check-toml
+
+-   repo: https://github.com/crate-ci/typos
+    rev: v1.28.2
+    hooks:
+    -   id: typos
+        # Override the default arguments, which include writing back all
+        # suggested changes. We don't want false positives to mangle files.
+        args: [--force-exclude, --sort]
+
+-   repo: https://github.com/psf/black
+    rev: 25.12.0
+    hooks:
+    -   id: black
+
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.11
+    hooks:
+    # Run the linter
+    -   id: ruff-check
+        # This helps auto-fixes trivial issues. "git diff" can be run to review the changes.
+        args: [ --fix ]
+    # Run the formatter
+    -   id: ruff-format
+
+-   repo: https://github.com/executablebooks/mdformat
+    rev: 0.7.19
+    hooks:
+    -   id: mdformat
+        name: Format markdown files
+        args: [--wrap, "no"]
+        files: \.md$
+        #excluding docs as well to prevent unintentionally break in text format
+        exclude: (\.mdx$|^docs)
