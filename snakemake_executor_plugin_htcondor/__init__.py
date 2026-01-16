@@ -342,8 +342,19 @@ class Executor(RemoteExecutor):
             # so we assume it contains something like `snakemake $@`
             job_args = self.format_job_exec(job).removeprefix("python -m snakemake ")
         else:
-            job_exec = self.get_python_executable()
-            job_args = self.format_job_exec(job).removeprefix(job_exec + " ")
+            # Use sys.executable to get the full path to Python interpreter
+            # (not just "python" which won't work for HTCondor transfers)
+            job_exec = sys.executable
+            # Get the command that would normally be run
+            full_cmd = self.format_job_exec(job)
+            # Remove the python executable prefix (which might be just "python" or a path)
+            for prefix in [sys.executable + " ", "python ", self.get_python_executable() + " "]:
+                if full_cmd.startswith(prefix):
+                    job_args = full_cmd.removeprefix(prefix)
+                    break
+            else:
+                # Fallback: just remove up to "-m"
+                job_args = full_cmd.split(" ", 1)[1] if " " in full_cmd else full_cmd
 
         # Sanitize arguments before returning
         job_args = self._sanitize_job_args(job_args)
