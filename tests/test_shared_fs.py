@@ -2,8 +2,7 @@
 Unit tests for shared filesystem prefix functionality in HTCondor executor.
 """
 
-from unittest.mock import Mock, MagicMock, patch
-from os.path import join
+from unittest.mock import Mock
 from snakemake_executor_plugin_htcondor import is_shared_fs, ExecutorSettings, Executor
 
 
