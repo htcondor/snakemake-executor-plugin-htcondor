@@ -12,6 +12,7 @@ shared filesystem prefixes and config file locations.
 
 from unittest.mock import Mock, MagicMock
 from snakemake_executor_plugin_htcondor import Executor
+import sys
 
 
 class TestPrepareConfigFilesForTransfer:
@@ -514,7 +515,7 @@ class TestFilesystemModes:
             "-m snakemake --configfiles /home/user/project/config.yaml --cores 1"
             in job_args
         )
-        assert job_exec == "python"
+        assert job_exec == sys.executable
 
         # No files should be transferred
         assert transfer_in == []
