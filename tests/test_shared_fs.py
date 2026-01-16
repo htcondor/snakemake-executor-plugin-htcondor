@@ -126,9 +126,15 @@ class TestGetFilesForTransfer:
         self.executor.workflow.configfiles = []
         self.executor.get_snakefile = Mock(return_value="/home/user/Snakefile")
 
-        # Bind the actual method to our mock
+        # Bind the actual methods to our mock
         self.executor._get_files_for_transfer = (
             Executor._get_files_for_transfer.__get__(self.executor, Executor)
+        )
+        self.executor._add_file_if_transferable = (
+            Executor._add_file_if_transferable.__get__(self.executor, Executor)
+        )
+        self.executor._parse_file_list = (
+            Executor._parse_file_list.__get__(self.executor, Executor)
         )
 
         # Create mock job
@@ -136,9 +142,10 @@ class TestGetFilesForTransfer:
         self.job.input = []
         self.job.output = []
         self.job.resources = Mock()
-        self.job.resources.get = Mock(
-            return_value=True
-        )  # Default preserve_relative_paths=True
+        self.job.resources.get = Mock(return_value=None)  # Default returns None for all resources
+        self.job.rule = Mock()
+        self.job.rule.script = None
+        self.job.rule.notebook = None
 
     def test_snakefile_not_on_shared_fs(self):
         """Test that Snakefile not on shared FS is included in transfer."""
@@ -188,6 +195,12 @@ class TestGetFilesForTransfer:
             "/staging/user/shared-file.txt",
             "/home/user/another-file.txt",
         ]
+        
+        # Set preserve_relative_paths=True to get full paths
+        self.job.resources.get = Mock(
+            side_effect=lambda key, default=None:
+                True if key == "preserve_relative_paths" else default
+        )
 
         transfer_input, _ = self.executor._get_files_for_transfer(self.job)
 
@@ -240,6 +253,123 @@ class TestGetFilesForTransfer:
         # Should only have Snakefile
         assert len(transfer_input) == 1
         assert transfer_output == []
+
+    def test_script_file_included_in_transfer(self):
+        """Test that script files from script: directive are transferred."""
+        self.job.rule = Mock()
+        self.job.rule.script = "scripts/process.py"
+        self.job.rule.notebook = None
+        self.job.wildcards = {}
+        self.job.params = {}
+        self.job.format_wildcards = Mock(return_value="scripts/process.py")
+
+        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+
+        assert "scripts/process.py" in transfer_input
+
+    def test_notebook_file_included_in_transfer(self):
+        """Test that notebook files from notebook: directive are transferred."""
+        self.job.rule = Mock()
+        self.job.rule.script = None
+        self.job.rule.notebook = "notebooks/analysis.ipynb"
+        self.job.wildcards = {}
+        self.job.params = {}
+        self.job.format_wildcards = Mock(return_value="notebooks/analysis.ipynb")
+
+        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+
+        assert "notebooks/analysis.ipynb" in transfer_input
+
+    def test_script_on_shared_fs_not_transferred(self):
+        """Test that scripts on shared FS are not transferred."""
+        self.job.rule = Mock()
+        self.job.rule.script = "/staging/scripts/process.py"
+        self.job.rule.notebook = None
+        self.job.wildcards = {}
+        self.job.params = {}
+        self.job.format_wildcards = Mock(return_value="/staging/scripts/process.py")
+
+        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+
+        assert "/staging/scripts/process.py" not in transfer_input
+
+    def test_htcondor_transfer_input_files_resource(self):
+        """Test that htcondor_transfer_input_files resource adds files to transfer."""
+        self.job.rule = Mock()
+        self.job.rule.script = None
+        self.job.rule.notebook = None
+        self.job.wildcards = {}
+        self.job.params = {}
+        self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
+        
+        # Mock resources to return additional input files
+        def mock_get(key, default=None):
+            if key == "htcondor_transfer_input_files":
+                return "helpers/module1.py,helpers/module2.py"
+            elif key == "preserve_relative_paths":
+                return True
+            return default
+        
+        self.job.resources.get = Mock(side_effect=mock_get)
+
+        # Bind _parse_file_list method
+        self.executor._parse_file_list = (
+            Executor._parse_file_list.__get__(self.executor, Executor)
+        )
+
+        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+
+        assert "helpers/module1.py" in transfer_input
+        assert "helpers/module2.py" in transfer_input
+
+    def test_htcondor_transfer_output_files_resource(self):
+        """Test that htcondor_transfer_output_files resource adds files to transfer."""
+        self.job.rule = Mock()
+        self.job.rule.script = None
+        self.job.rule.notebook = None
+        self.job.wildcards = {}
+        self.job.params = {}
+        self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
+        
+        # Mock resources to return additional output files
+        def mock_get(key, default=None):
+            if key == "htcondor_transfer_output_files":
+                return ["results/model.pkl", "results/metrics.json"]
+            elif key == "preserve_relative_paths":
+                return True
+            return default
+        
+        self.job.resources.get = Mock(side_effect=mock_get)
+
+        # Bind _parse_file_list method
+        self.executor._parse_file_list = (
+            Executor._parse_file_list.__get__(self.executor, Executor)
+        )
+
+        _, transfer_output = self.executor._get_files_for_transfer(self.job)
+
+        assert "results/model.pkl" in transfer_output
+        assert "results/metrics.json" in transfer_output
+
+    def test_job_wrapper_included_in_transfer(self):
+        """Test that job_wrapper resource is explicitly transferred."""
+        self.job.rule = Mock()
+        self.job.rule.script = None
+        self.job.rule.notebook = None
+        
+        # Mock resources to return job_wrapper
+        def mock_get(key, default=None):
+            if key == "job_wrapper":
+                return "workflow/wrapper.sh"
+            elif key == "preserve_relative_paths":
+                return True
+            return default
+        
+        self.job.resources.get = Mock(side_effect=mock_get)
+
+        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+
+        assert "workflow/wrapper.sh" in transfer_input
 
 
 class TestPrepareConfigFilesForTransferBasic:

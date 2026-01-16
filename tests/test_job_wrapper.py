@@ -87,7 +87,9 @@ class TestGetBaseExecAndArgs:
 
         job_exec, _ = self.executor._get_base_exec_and_args(job)
 
-        assert job_exec == "python"
+        # Should use sys.executable (full path to Python)
+        import sys
+        assert job_exec == sys.executable
         self.executor.get_python_executable.assert_called_once()
 
     def test_wrapper_strips_snakemake_prefix_from_args(self):
@@ -110,13 +112,17 @@ class TestGetBaseExecAndArgs:
         job.resources = Mock()
         job.resources.get = Mock(return_value=None)
         self.executor.get_python_executable = Mock(return_value="/usr/bin/python3")
+        
+        # Use sys.executable in the mock return value to match reality
+        import sys
         self.executor.format_job_exec = Mock(
-            return_value="/usr/bin/python3 -m snakemake --snakefile Snakefile"
+            return_value=f"{sys.executable} -m snakemake --snakefile Snakefile"
         )
 
         job_exec, job_args = self.executor._get_base_exec_and_args(job)
 
-        assert job_exec == "/usr/bin/python3"
+        # Should use sys.executable, not get_python_executable()
+        assert job_exec == sys.executable
         assert job_args == "-m snakemake --snakefile Snakefile"
 
 
@@ -287,5 +293,6 @@ class TestJobWrapperEdgeCases:
 
         job_exec, _ = self.executor._get_base_exec_and_args(job)
 
-        # Empty string is falsy, so should use Python
-        assert job_exec == "python"
+        # Empty string is falsy, so should use sys.executable
+        import sys
+        assert job_exec == sys.executable
