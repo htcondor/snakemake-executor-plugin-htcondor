@@ -388,7 +388,8 @@ class TestConfigFilePathsIntegration:
 
         modified_args, transfer_configs = (
             self.executor._prepare_config_files_for_transfer(
-                job_args, shared_fs_prefixes=["/staging/"]  # Config not on this FS
+                job_args,
+                shared_fs_prefixes=["/staging/"],  # Config not on this FS
             )
         )
 
@@ -650,7 +651,8 @@ class TestConfigFilesOutsideWorkdir:
         # Should raise WorkflowError
         with pytest.raises(WorkflowError) as exc_info:
             self.executor._prepare_config_files_for_transfer(
-                job_args, shared_fs_prefixes=[]  # No shared FS
+                job_args,
+                shared_fs_prefixes=[],  # No shared FS
             )
 
         error_msg = str(exc_info.value)
@@ -668,7 +670,8 @@ class TestConfigFilesOutsideWorkdir:
         # Should succeed without error
         modified_args, transfer_configs = (
             self.executor._prepare_config_files_for_transfer(
-                job_args, shared_fs_prefixes=[]  # No shared FS
+                job_args,
+                shared_fs_prefixes=[],  # No shared FS
             )
         )
 
@@ -696,7 +699,8 @@ class TestConfigFilesOutsideWorkdir:
         # Should raise error on first file outside workdir
         with pytest.raises(WorkflowError) as exc_info:
             self.executor._prepare_config_files_for_transfer(
-                job_args, shared_fs_prefixes=[]  # No shared FS
+                job_args,
+                shared_fs_prefixes=[],  # No shared FS
             )
 
         error_msg = str(exc_info.value)
@@ -719,7 +723,8 @@ class TestConfigFilesOutsideWorkdir:
         # Should raise WorkflowError
         with pytest.raises(WorkflowError) as exc_info:
             self.executor._prepare_config_files_for_transfer(
-                job_args, shared_fs_prefixes=[]  # No shared FS
+                job_args,
+                shared_fs_prefixes=[],  # No shared FS
             )
 
         error_msg = str(exc_info.value)
