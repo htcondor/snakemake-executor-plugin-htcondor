@@ -29,8 +29,6 @@ repos:
     -   id: ruff-check
         # This helps auto-fixes trivial issues. "git diff" can be run to review the changes.
         args: [ --fix ]
-    # Run the formatter
-    -   id: ruff-format
 
 -   repo: https://github.com/executablebooks/mdformat
     rev: 0.7.19
