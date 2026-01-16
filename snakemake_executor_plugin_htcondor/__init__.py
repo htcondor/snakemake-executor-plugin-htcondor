@@ -13,9 +13,11 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 import traceback
-from os.path import join, isabs, relpath
+from os.path import join, isabs, relpath, basename, abspath, normpath, exists
 from os import makedirs, sep
 import re
+import sys
+import logging
 
 
 def is_shared_fs(in_path, shared_prefixes) -> bool:
@@ -149,6 +151,76 @@ class Executor(RemoteExecutor):
         self.logger.debug(f"Parsed shared filesystem prefixes: {normalized}")
         return normalized
 
+    def _add_file_if_transferable(
+        self,
+        file_path: str,
+        transfer_list: List[str],
+        expand_wildcards: bool = False,
+        job: Optional[JobExecutorInterface] = None,
+        validate_exists: bool = True,
+    ) -> None:
+        """
+        Add a file to the transfer list if it's not on a shared filesystem.
+
+        Args:
+            file_path: Path to potentially transfer
+            transfer_list: List to add the file to
+            expand_wildcards: Whether to expand wildcards/params in the path
+            job: Job object (required if expand_wildcards is True)
+            validate_exists: Whether to validate file existence (default True)
+        """
+        # Explicitly handle empty/None filepaths
+        if file_path is None or str(file_path).strip() == "":
+            self.logger.debug(f"Skipping empty or None filepath")
+            return
+
+        file_path = str(file_path).strip()
+
+        if expand_wildcards and job:
+            file_path = job.format_wildcards(
+                file_path, wildcards=job.wildcards, params=job.params
+            )
+
+        # Normalize path to handle './', '../', '//' etc.
+        file_path = normpath(file_path)
+
+        # Check if already in transfer list (after normalization)
+        if file_path in transfer_list:
+            self.logger.debug(f"File already in transfer list: {file_path}")
+            return
+
+        # Check if on shared filesystem
+        if is_shared_fs(file_path, self.shared_fs_prefixes):
+            self.logger.debug(
+                f"File on shared filesystem, skipping transfer: {file_path}"
+            )
+            return
+
+        # Validate file existence if requested
+        if validate_exists and not exists(file_path):
+            self.logger.warning(
+                f"File marked for transfer does not exist: {file_path}. "
+                "This will likely cause job failure."
+            )
+
+        self.logger.debug(f"Adding file to transfer list: {file_path}")
+        transfer_list.append(file_path)
+
+    def _parse_file_list(self, files_spec) -> List[str]:
+        """
+        Parse a file specification that can be either a string or list.
+
+        Args:
+            files_spec: String (comma-separated) or list of file paths
+
+        Returns:
+            List of file paths
+        """
+        if isinstance(files_spec, str):
+            return [f.strip() for f in files_spec.split(",") if f.strip()]
+        else:
+            return list(files_spec)
+
     def _get_files_for_transfer(
         self, job: JobExecutorInterface
     ) -> tuple[List[str], List[str]]:
@@ -163,37 +235,78 @@ class Executor(RemoteExecutor):
         Returns:
             Tuple of (transfer_input_files, transfer_output_files) lists
         """
+        self.logger.debug(f"Determining files for transfer for job: {job}")
         transfer_input_files = []
         transfer_output_files = []
 
         # Add the snakefile to the transfer list if not on shared filesystem
-        snakefile = self.get_snakefile()
-        if not is_shared_fs(snakefile, self.shared_fs_prefixes):
-            transfer_input_files.append(str(snakefile))
+        self._add_file_if_transferable(self.get_snakefile(), transfer_input_files)
 
         # Process input files
         if job.input:
             inputs = [input for input in job.input]
-
-            # Preserve relative paths by default
+            # IMPORTANT: Preserve relative paths by default to maintain directory structure
+            # at the execution point. HTCondor will recreate the relative path structure.
+            # Set preserve_relative_paths=False to transfer only top-level directories.
             if not job.resources.get("preserve_relative_paths", True):
                 inputs = {path.split(sep)[0] for path in inputs}
 
             for path in inputs:
-                if path and not is_shared_fs(path, self.shared_fs_prefixes):
-                    transfer_input_files.append(str(path))
+                self._add_file_if_transferable(path, transfer_input_files)
 
         # NOTE: Config files are handled separately by _prepare_config_files_for_transfer()
         # which returns relative paths for both the job arguments and the transfer list.
 
-        # Process output files
+        # Process output files (only transfer top-most output directories)
+        # NOTE: For outputs, we only transfer top-level directories to avoid
+        # transferring deeply nested structures. HTCondor will bring back the
+        # entire directory tree from the execution point.
         if job.output:
-            # Only transfer top-most output directories
             top_most_output_directories = {path.split(sep)[0] for path in job.output}
             for path in top_most_output_directories:
-                if path and not is_shared_fs(path, self.shared_fs_prefixes):
-                    transfer_output_files.append(str(path))
+                self._add_file_if_transferable(path, transfer_output_files)
 
+        # Process script files (from script: directive)
+        if job.rule.script:
+            self._add_file_if_transferable(
+                job.rule.script, transfer_input_files, expand_wildcards=True, job=job
+            )
+
+        # Process notebook files (from notebook: directive)
+        if job.rule.notebook:
+            self._add_file_if_transferable(
+                job.rule.notebook, transfer_input_files, expand_wildcards=True, job=job
+            )
+
+        # Process additional input files from htcondor_transfer_input_files resource
+        if additional_files := job.resources.get("htcondor_transfer_input_files"):
+            for file_path in self._parse_file_list(additional_files):
+                self._add_file_if_transferable(
+                    file_path, transfer_input_files, expand_wildcards=True, job=job
+                )
+
+        # Process additional output files from htcondor_transfer_output_files resource
+        if additional_outputs := job.resources.get("htcondor_transfer_output_files"):
+            for file_path in self._parse_file_list(additional_outputs):
+                self._add_file_if_transferable(
+                    file_path, transfer_output_files, expand_wildcards=True, job=job
+                )
+
+        # Explicitly handle job_wrapper if specified
+        # The job_wrapper is used as the executable, so it must be transferred
+        if job_wrapper := job.resources.get("job_wrapper"):
+            self.logger.debug(f"Detected job_wrapper resource: {job_wrapper}")
+            self._add_file_if_transferable(
+                job_wrapper,
+                transfer_input_files,
+                expand_wildcards=False,  # job_wrapper paths typically don't use wildcards
+                job=job,
+            )
+
+        self.logger.debug(
+            f"Transfer input files: {transfer_input_files}\n"
+            f"Transfer output files: {transfer_output_files}"
+        )
         return transfer_input_files, transfer_output_files
 
     def _prepare_config_files_for_transfer(
@@ -348,7 +461,11 @@ class Executor(RemoteExecutor):
             # Get the command that would normally be run
             full_cmd = self.format_job_exec(job)
             # Remove the python executable prefix (which might be just "python" or a path)
-            for prefix in [sys.executable + " ", "python ", self.get_python_executable() + " "]:
+            for prefix in [
+                sys.executable + " ",
+                "python ",
+                self.get_python_executable() + " ",
+            ]:
                 if full_cmd.startswith(prefix):
                     job_args = full_cmd.removeprefix(prefix)
                     break

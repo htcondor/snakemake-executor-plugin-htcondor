@@ -10,15 +10,17 @@
 
 
 The following [submit description file commands](https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html) are supported (add them as user-defined resources):
-| Basic             | Matchmaking      | Matchmaking (GPU)         | Policy                     |
-| ----------------- | ---------------- | ------------------------- | -------------------------- |
-| `getenv`          | `rank`           | `request_gpus`            | `max_retries`              |
-| `environment`     | `request_disk`   | `require_gpus`            | `allowed_execute_duration` |
-| `input`           | `request_memory` | `gpus_minimum_capability` | `allowed_job_duration`     |
-| `max_materialize` | `requirements`   | `gpus_minimum_memory`     | `retry_until`              |
-| `max_idle`        | `classad_<foo>`**| `gpus_minimum_runtime`    |                            |
-| `job_wrapper`*    |                  | `cuda_version`            |                            |
-| `universe`        |                  |                           |                            |
+| Basic                              | Matchmaking      | Matchmaking (GPU)         | Policy                     |
+| ---------------------------------- | ---------------- | ------------------------- | -------------------------- |
+| `getenv`                           | `rank`           | `request_gpus`            | `max_retries`              |
+| `environment`                      | `request_disk`   | `require_gpus`            | `allowed_execute_duration` |
+| `input`                            | `request_memory` | `gpus_minimum_capability` | `allowed_job_duration`     |
+| `max_materialize`                  | `requirements`   | `gpus_minimum_memory`     | `retry_until`              |
+| `max_idle`                         | `classad_<foo>`**| `gpus_minimum_runtime`    |                            |
+| `job_wrapper`*                     |                  | `cuda_version`            |                            |
+| `universe`                         |                  |                           |                            |
+| `htcondor_transfer_input_files`*** |                  |                           |                            |
+| `htcondor_transfer_output_files`***|                  |                           |                            |
 
 
 \* A custom-defined `job_wrapper` resource will be used as the HTCondor executable for the job. It can be used for environment setup, but must pass all arguments
@@ -39,6 +41,22 @@ snakemake "$@"
 
 \*\* Custom ClassAds can be defined using the `classad_` prefix as a custom job resource. For example, to define the ClassAd `+MyClassAd`, define `classad_MyClassAd` in
 the job's resources.
+
+\*\*\* Additional input or output files for transfer can be specified using `htcondor_transfer_input_files` and `htcondor_transfer_output_files` resources.
+These are useful for transferring files that aren't part of the rule's `input:`/`output:` directives (e.g., helper scripts, configuration files, logs, intermediate results).
+Supports both string (comma-separated) and list formats, and wildcards will be expanded.
+Files on shared filesystem prefixes are automatically excluded from transfer.
+
+Example usage:
+```python
+rule process:
+    input: "data/{sample}.txt"
+    output: "results/{sample}.out"
+    resources:
+        htcondor_transfer_input_files="scripts/helpers.py,config/params.yaml",
+        htcondor_transfer_output_files="logs/{sample}.log"
+    script: "scripts/process.py"
+```
 
 ## Jobs Without Shared Filesystems
 
