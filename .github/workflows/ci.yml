@@ -10,59 +10,17 @@ env:
   PYTHON_VERSION: 3.11
 
 jobs:
-  formatting:
+  pre-commit:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the code
+      - name: Clone the code
         uses: actions/checkout@v3
-
-      - uses: actions/setup-python@v4
+      - name: Install python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install poetry
-        run: pip install poetry
-
-      - name: Determine dependencies
-        run: poetry lock
-
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: poetry
-
-      - name: Install Dependencies using Poetry
-        run: poetry install
-
-      - name: Check formatting
-        run: poetry run black --check .
-
-  linting:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the code
-        uses: actions/checkout@v3
-
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install poetry
-        run: pip install poetry
-
-      - name: Determine dependencies
-        run: poetry lock
-
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: poetry
-
-      - name: Install Dependencies using Poetry
-        run: poetry install
-
-      - name: Check code
-        run: poetry run flake8
+      - name: Run the pre-commit
+        uses: pre-commit/action@v3.0.1
 
   testing:
     runs-on: ubuntu-latest
