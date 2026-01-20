@@ -101,6 +101,10 @@ class Executor(RemoteExecutor):
         # jobDir: Directory where the job will tore log, output and error files.
         self.jobDir = self.workflow.executor_settings.jobdir
 
+        # Create the job directory immediately so it exists even if no jobs are submitted
+        # This ensures logs/errors can be checked in CI/CD regardless of workflow success
+        makedirs(self.jobDir, exist_ok=True)
+
         # Parse shared filesystem prefixes
         self.shared_fs_prefixes = self._parse_shared_fs_prefixes(
             self.workflow.executor_settings.shared_fs_prefixes
@@ -573,9 +577,6 @@ class Executor(RemoteExecutor):
 
     def run_job(self, job: JobExecutorInterface):
         # Submitting job to HTCondor
-
-        # Creating directory to store log, output and error files
-        makedirs(self.jobDir, exist_ok=True)
 
         # Determine if file transfer is needed based on shared filesystem configuration
         # When shared_fs_usage is set (truthy), AP and EP share a filesystem
