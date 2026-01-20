@@ -180,9 +180,18 @@ class Executor(RemoteExecutor):
         file_path = str(file_path).strip()
 
         if expand_wildcards and job:
-            file_path = job.format_wildcards(
-                file_path, wildcards=job.wildcards, params=job.params
-            )
+            # GroupJob objects don't have wildcards/params attributes
+            # Only expand if the job has these attributes (individual jobs)
+            if hasattr(job, "wildcards") and hasattr(job, "params"):
+                self.logger.debug(f"Expanding wildcards in: {file_path}")
+                file_path = job.format_wildcards(
+                    file_path, wildcards=job.wildcards, params=job.params
+                )
+                self.logger.debug(f"After wildcard expansion: {file_path}")
+            else:
+                self.logger.debug(
+                    f"Job does not have wildcards/params attributes, skipping expansion for: {file_path}"
+                )
 
         # Normalize path to handle './', '../', '//' etc.
         file_path = normpath(file_path)
@@ -208,6 +217,65 @@ class Executor(RemoteExecutor):
 
         self.logger.debug(f"Adding file to transfer list: {file_path}")
         transfer_list.append(file_path)
+
+    def _add_module_snakefiles(
+        self,
+        snakefile_path: str,
+        transfer_list: List[str],
+        visited: Optional[set] = None,
+    ):
+        """
+        Recursively parse Snakefile to find module declarations and add their Snakefiles.
+        We're using this approach because it wasn't obvious how to access module Snakefiles
+        via the `job` object.
+
+        Module declarations in Snakemake look like:
+            module name:
+                snakefile: "path/to/Snakefile"
+
+        This function works recursively - if a module Snakefile itself contains module
+        declarations, those will also be detected and transferred.
+
+        Args:
+            snakefile_path: Path to the Snakefile to parse
+            transfer_list: List to append module Snakefiles to
+            visited: Set of already-visited Snakefiles to prevent infinite loops
+        """
+        if not exists(snakefile_path):
+            return
+
+        # Initialize visited set on first call to prevent infinite recursion
+        if visited is None:
+            visited = set()
+
+        # Normalize the path for comparison
+        normalized_path = normpath(snakefile_path)
+        if normalized_path in visited:
+            return
+        visited.add(normalized_path)
+
+        try:
+            with open(snakefile_path, "r") as f:
+                content = f.read()
+
+            # Pattern to match: module name:\n    snakefile: "path" or snakefile: 'path'
+            # Handles both single and double quotes
+            pattern = r'module\s+\w+:\s*\n\s+snakefile:\s*["\']([^"\']+)["\']'
+            matches = re.findall(pattern, content, re.MULTILINE)
+
+            for module_snakefile in matches:
+                # Module Snakefile paths are relative to the current Snakefile directory
+                if not isabs(module_snakefile):
+                    snakefile_dir = normpath(join(snakefile_path, ".."))
+                    module_snakefile = join(snakefile_dir, module_snakefile)
+
+                self.logger.debug(f"Found module Snakefile: {module_snakefile}")
+                self._add_file_if_transferable(module_snakefile, transfer_list)
+
+                # Recursively check if this module Snakefile has its own modules
+                self._add_module_snakefiles(module_snakefile, transfer_list, visited)
+        except Exception as e:
+            self.logger.warning(f"Error parsing Snakefile for modules: {e}")
 
     def _parse_file_list(self, files_spec) -> List[str]:
         """
@@ -242,12 +310,18 @@ class Executor(RemoteExecutor):
         transfer_input_files = []
         transfer_output_files = []
 
-        # Add the snakefile to the transfer list if not on shared filesystem
-        self._add_file_if_transferable(self.get_snakefile(), transfer_input_files)
+        # Add the main snakefile to the transfer list if not on shared filesystem
+        main_snakefile = self.get_snakefile()
+        self._add_file_if_transferable(main_snakefile, transfer_input_files)
+
+        # Add module Snakefiles by parsing the main Snakefile
+        # Module declarations look like: module name:\n    snakefile: "path/to/Snakefile"
+        self._add_module_snakefiles(main_snakefile, transfer_input_files)
 
         # Process input files
         if job.input:
             inputs = [input for input in job.input]
+            self.logger.debug(f"Job {job.name} input files: {inputs}")
             # IMPORTANT: Preserve relative paths by default to maintain directory structure
             # at the execution point. HTCondor will recreate the relative path structure.
             # Set preserve_relative_paths=False to transfer only top-level directories.
@@ -269,17 +343,56 @@ class Executor(RemoteExecutor):
             for path in top_most_output_directories:
                 self._add_file_if_transferable(path, transfer_output_files)
 
-        # Process script files (from script: directive)
-        if job.rule.script:
-            self._add_file_if_transferable(
-                job.rule.script, transfer_input_files, expand_wildcards=True, job=job
-            )
-
-        # Process notebook files (from notebook: directive)
-        if job.rule.notebook:
-            self._add_file_if_transferable(
-                job.rule.notebook, transfer_input_files, expand_wildcards=True, job=job
-            )
+        # Process script and notebook files from all rules in the job
+        # For grouped jobs, we need to iterate over job.jobs to access each individual
+        # job's rule which contains the script/notebook attributes.
+        # For individual jobs, job.rule directly has these attributes.
+        if job.is_group():
+            # GroupJob: iterate over individual jobs within the group
+            individual_jobs = job.jobs if hasattr(job, "jobs") else []
+            for individual_job in individual_jobs:
+                if hasattr(individual_job, "rule"):
+                    rule = individual_job.rule
+                    if hasattr(rule, "script") and rule.script:
+                        self.logger.debug(
+                            f"Processing script from grouped job: {rule.script}"
+                        )
+                        self._add_file_if_transferable(
+                            rule.script,
+                            transfer_input_files,
+                            expand_wildcards=True,
+                            job=individual_job,
+                        )
+                    if hasattr(rule, "notebook") and rule.notebook:
+                        self.logger.debug(
+                            f"Processing notebook from grouped job: {rule.notebook}"
+                        )
+                        self._add_file_if_transferable(
+                            rule.notebook,
+                            transfer_input_files,
+                            expand_wildcards=True,
+                            job=individual_job,
+                        )
+        else:
+            # Individual job: access rule directly
+            if hasattr(job, "rule"):
+                rule = job.rule
+                if hasattr(rule, "script") and rule.script:
+                    self.logger.debug(f"Processing script: {rule.script}")
+                    self._add_file_if_transferable(
+                        rule.script,
+                        transfer_input_files,
+                        expand_wildcards=True,
+                        job=job,
+                    )
+                if hasattr(rule, "notebook") and rule.notebook:
+                    self.logger.debug(f"Processing notebook: {rule.notebook}")
+                    self._add_file_if_transferable(
+                        rule.notebook,
+                        transfer_input_files,
+                        expand_wildcards=True,
+                        job=job,
+                    )
 
         # Process additional input files from htcondor_transfer_input_files resource
         if additional_files := job.resources.get("htcondor_transfer_input_files"):

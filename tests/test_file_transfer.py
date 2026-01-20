@@ -250,6 +250,7 @@ class TestScriptTransfer:
 
         # Create mock job
         self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
         self.job.input = []
         self.job.output = []
         self.job.resources = Mock()
@@ -257,6 +258,8 @@ class TestScriptTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        # Mock job.rules() to return an iterable containing the rule
+        self.job.rules = [self.job.rule]
 
     def test_script_file_transferred(self):
         """Test that script files are included in transfer list."""
@@ -344,6 +347,7 @@ class TestNotebookTransfer:
 
         # Create mock job
         self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
         self.job.input = []
         self.job.output = []
         self.job.resources = Mock()
@@ -351,6 +355,8 @@ class TestNotebookTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        # Mock job.rules() to return an iterable containing the rule
+        self.job.rules = [self.job.rule]
 
     def test_notebook_file_transferred(self):
         """Test that notebook files are included in transfer list."""
@@ -392,12 +398,14 @@ class TestJobWrapperTransfer:
 
         # Create mock job
         self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
         self.job.input = []
         self.job.output = []
         self.job.resources = Mock()
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        self.job.rules = [self.job.rule]
 
     def test_job_wrapper_transferred(self):
         """Test that job_wrapper is included in transfer list."""
@@ -410,6 +418,7 @@ class TestJobWrapperTransfer:
                     wrapper_path if key == "job_wrapper" else default
                 )
             )
+            self.job.rules = [self.job.rule]
 
             transfer_input, _ = self.executor._get_files_for_transfer(self.job)
 
@@ -431,6 +440,7 @@ class TestJobWrapperTransfer:
                     wrapper_path if key == "job_wrapper" else default
                 )
             )
+            self.job.rules = [self.job.rule]
 
             transfer_input, _ = self.executor._get_files_for_transfer(self.job)
 
@@ -451,6 +461,7 @@ class TestJobWrapperTransfer:
                     wrapper_path if key == "job_wrapper" else default
                 )
             )
+            self.job.rules = [self.job.rule]
 
             self.executor._get_files_for_transfer(self.job)
 
@@ -485,11 +496,14 @@ class TestCustomTransferResources:
 
         # Create mock job
         self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
         self.job.input = []
         self.job.output = []
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        # Mock job.rules() to return an iterable containing the rule
+        self.job.rules = [self.job.rule]
 
     def test_htcondor_transfer_input_files_string(self):
         """Test htcondor_transfer_input_files with comma-separated string."""
@@ -641,6 +655,7 @@ class TestFileTransferLogging:
 
         # Create mock job
         self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
         self.job.input = []
         self.job.output = []
         self.job.resources = Mock()
@@ -648,6 +663,8 @@ class TestFileTransferLogging:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        # Mock job.rules() to return an iterable containing the rule
+        self.job.rules = [self.job.rule]
 
     def test_logs_transfer_summary(self):
         """Test that summary of transfer files is logged."""
@@ -662,3 +679,342 @@ class TestFileTransferLogging:
 
         # Should log debug messages
         self.executor.logger.debug.assert_called()
+
+
+class TestModuleSnakefileDetection:
+    """Test the _add_module_snakefiles method for detecting module Snakefiles."""
+
+    def setup_method(self):
+        """Setup mock executor and temporary files for testing."""
+        self.executor = Mock(spec=Executor)
+        self.executor.logger = Mock()
+        self.executor.shared_fs_prefixes = []
+
+        # Bind the actual methods to our mock
+        self.executor._add_module_snakefiles = Executor._add_module_snakefiles.__get__(
+            self.executor, Executor
+        )
+        self.executor._add_file_if_transferable = (
+            Executor._add_file_if_transferable.__get__(self.executor, Executor)
+        )
+
+        # Create temporary directory for test files
+        self.temp_dir = tempfile.mkdtemp()
+
+    def teardown_method(self):
+        """Clean up temporary files."""
+        import shutil
+
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_detects_single_module_with_double_quotes(self):
+        """Test detection of module declaration with double quotes."""
+        snakefile_content = """
+rule all:
+    input: "output.txt"
+
+module quality_check:
+    snakefile: "modules/qc/Snakefile"
+
+use rule * from quality_check as qc_*
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        # Create the module Snakefile so it exists
+        module_dir = os.path.join(self.temp_dir, "modules", "qc")
+        os.makedirs(module_dir, exist_ok=True)
+        module_snakefile = os.path.join(module_dir, "Snakefile")
+        with open(module_snakefile, "w") as f:
+            f.write("rule test:\n    output: 'test.txt'\n")
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        assert len(transfer_list) == 1
+        assert module_snakefile in transfer_list
+
+    def test_detects_single_module_with_single_quotes(self):
+        """Test detection of module declaration with single quotes."""
+        snakefile_content = """
+module quality_check:
+    snakefile: 'modules/qc/Snakefile'
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        module_dir = os.path.join(self.temp_dir, "modules", "qc")
+        os.makedirs(module_dir, exist_ok=True)
+        module_snakefile = os.path.join(module_dir, "Snakefile")
+        with open(module_snakefile, "w") as f:
+            f.write("rule test:\n    output: 'test.txt'\n")
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        assert len(transfer_list) == 1
+        assert module_snakefile in transfer_list
+
+    def test_detects_multiple_modules(self):
+        """Test detection of multiple module declarations."""
+        snakefile_content = """
+module quality_check:
+    snakefile: "modules/qc/Snakefile"
+
+module preprocessing:
+    snakefile: "modules/prep/Snakefile"
+
+module analysis:
+    snakefile: "modules/analysis/Snakefile"
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        # Create all module Snakefiles
+        for module_name in ["qc", "prep", "analysis"]:
+            module_dir = os.path.join(self.temp_dir, "modules", module_name)
+            os.makedirs(module_dir, exist_ok=True)
+            module_snakefile = os.path.join(module_dir, "Snakefile")
+            with open(module_snakefile, "w") as f:
+                f.write("rule test:\n    output: 'test.txt'\n")
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        assert len(transfer_list) == 3
+
+    def test_handles_no_modules(self):
+        """Test that workflows without modules work correctly."""
+        snakefile_content = """
+rule all:
+    input: "output.txt"
+
+rule process:
+    output: "output.txt"
+    shell: "touch {output}"
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        assert len(transfer_list) == 0
+
+    def test_handles_nonexistent_snakefile(self):
+        """Test that nonexistent Snakefile doesn't cause errors."""
+        transfer_list = []
+        self.executor._add_module_snakefiles("/nonexistent/Snakefile", transfer_list)
+
+        assert len(transfer_list) == 0
+        # Should not raise an exception
+
+    def test_resolves_relative_module_paths(self):
+        """Test that module paths relative to main Snakefile are resolved."""
+        # Create main Snakefile in subdirectory
+        workflow_dir = os.path.join(self.temp_dir, "workflow")
+        os.makedirs(workflow_dir, exist_ok=True)
+
+        snakefile_content = """
+module quality_check:
+    snakefile: "rules/qc.smk"
+"""
+        main_snakefile = os.path.join(workflow_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        # Create module Snakefile relative to workflow directory
+        rules_dir = os.path.join(workflow_dir, "rules")
+        os.makedirs(rules_dir, exist_ok=True)
+        module_snakefile = os.path.join(rules_dir, "qc.smk")
+        with open(module_snakefile, "w") as f:
+            f.write("rule test:\n    output: 'test.txt'\n")
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        assert len(transfer_list) == 1
+        assert module_snakefile in transfer_list
+
+    def test_skips_modules_on_shared_filesystem(self):
+        """Test that module Snakefiles on shared FS are not transferred."""
+        self.executor.shared_fs_prefixes = ["/staging/"]
+
+        snakefile_content = """
+module quality_check:
+    snakefile: "/staging/modules/qc/Snakefile"
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        # Create the module Snakefile on "shared" filesystem
+        # (we won't actually create it since it's on shared FS)
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        # Should be empty because module is on shared FS
+        assert len(transfer_list) == 0
+
+    def test_handles_malformed_module_declarations(self):
+        """Test that malformed module declarations don't cause crashes."""
+        snakefile_content = """
+module quality_check:
+    # Missing snakefile declaration
+
+module preprocessing
+    snakefile: "broken syntax
+
+rule all:
+    input: "test.txt"
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        transfer_list = []
+        # Should not raise an exception
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        # Malformed declarations should be skipped
+        assert len(transfer_list) == 0
+
+    def test_logs_found_module_snakefiles(self):
+        """Test that found module Snakefiles are logged."""
+        snakefile_content = """
+module quality_check:
+    snakefile: "modules/qc/Snakefile"
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(snakefile_content)
+
+        module_dir = os.path.join(self.temp_dir, "modules", "qc")
+        os.makedirs(module_dir, exist_ok=True)
+        module_snakefile = os.path.join(module_dir, "Snakefile")
+        with open(module_snakefile, "w") as f:
+            f.write("rule test:\n    output: 'test.txt'\n")
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        # Should log debug message about finding the module
+        self.executor.logger.debug.assert_called()
+        debug_calls = [str(call) for call in self.executor.logger.debug.call_args_list]
+        assert any("Found module Snakefile" in call for call in debug_calls)
+
+    def test_detects_nested_modules_recursively(self):
+        """Test that modules within modules are detected recursively."""
+        # Main Snakefile uses quality_check module
+        main_snakefile_content = """
+module quality_check:
+    snakefile: "modules/qc/Snakefile"
+
+use rule * from quality_check as qc_*
+"""
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write(main_snakefile_content)
+
+        # quality_check module uses validation module (nested)
+        qc_module_content = """
+module validation:
+    snakefile: "validation/Snakefile"
+
+use rule * from validation as val_*
+
+rule quality_check:
+    output: "qc.txt"
+    shell: "touch {output}"
+"""
+        qc_dir = os.path.join(self.temp_dir, "modules", "qc")
+        os.makedirs(qc_dir, exist_ok=True)
+        qc_snakefile = os.path.join(qc_dir, "Snakefile")
+        with open(qc_snakefile, "w") as f:
+            f.write(qc_module_content)
+
+        # validation module (nested within qc module)
+        val_dir = os.path.join(qc_dir, "validation")
+        os.makedirs(val_dir, exist_ok=True)
+        val_snakefile = os.path.join(val_dir, "Snakefile")
+        with open(val_snakefile, "w") as f:
+            f.write(
+                "rule validate:\n    output: 'validated.txt'\n    shell: 'touch {output}'"
+            )
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        # Should find both the QC module and the nested validation module
+        assert len(transfer_list) == 2
+        assert qc_snakefile in transfer_list
+        assert val_snakefile in transfer_list
+
+    def test_handles_circular_module_references(self):
+        """Test that circular module references don't cause infinite loops."""
+        # Main Snakefile references module A
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write('module a:\n    snakefile: "modules/a/Snakefile"\n')
+
+        # Module A references module B
+        a_dir = os.path.join(self.temp_dir, "modules", "a")
+        os.makedirs(a_dir, exist_ok=True)
+        a_snakefile = os.path.join(a_dir, "Snakefile")
+        with open(a_snakefile, "w") as f:
+            f.write('module b:\n    snakefile: "../b/Snakefile"\n')
+
+        # Module B references module A (circular!)
+        b_dir = os.path.join(self.temp_dir, "modules", "b")
+        os.makedirs(b_dir, exist_ok=True)
+        b_snakefile = os.path.join(b_dir, "Snakefile")
+        with open(b_snakefile, "w") as f:
+            f.write('module a:\n    snakefile: "../a/Snakefile"\n')
+
+        transfer_list = []
+        # Should not cause infinite loop
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        # Should only add each module once
+        assert len(transfer_list) == 2
+        assert a_snakefile in transfer_list
+        assert b_snakefile in transfer_list
+
+    def test_deeply_nested_modules(self):
+        """Test detection of modules nested multiple levels deep."""
+        # Main -> level1 -> level2 -> level3
+        main_snakefile = os.path.join(self.temp_dir, "Snakefile")
+        with open(main_snakefile, "w") as f:
+            f.write('module level1:\n    snakefile: "level1/Snakefile"\n')
+
+        level1_dir = os.path.join(self.temp_dir, "level1")
+        os.makedirs(level1_dir, exist_ok=True)
+        level1_snakefile = os.path.join(level1_dir, "Snakefile")
+        with open(level1_snakefile, "w") as f:
+            f.write('module level2:\n    snakefile: "level2/Snakefile"\n')
+
+        level2_dir = os.path.join(level1_dir, "level2")
+        os.makedirs(level2_dir, exist_ok=True)
+        level2_snakefile = os.path.join(level2_dir, "Snakefile")
+        with open(level2_snakefile, "w") as f:
+            f.write('module level3:\n    snakefile: "level3/Snakefile"\n')
+
+        level3_dir = os.path.join(level2_dir, "level3")
+        os.makedirs(level3_dir, exist_ok=True)
+        level3_snakefile = os.path.join(level3_dir, "Snakefile")
+        with open(level3_snakefile, "w") as f:
+            f.write('rule test:\n    output: "test.txt"\n')
+
+        transfer_list = []
+        self.executor._add_module_snakefiles(main_snakefile, transfer_list)
+
+        # Should find all 3 nested modules
+        assert len(transfer_list) == 3
+        assert level1_snakefile in transfer_list
+        assert level2_snakefile in transfer_list
+        assert level3_snakefile in transfer_list

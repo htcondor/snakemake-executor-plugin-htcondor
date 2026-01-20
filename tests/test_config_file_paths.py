@@ -466,11 +466,14 @@ class TestFilesystemModes:
 
         # Create mock job
         self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
         self.job.input = []
         self.job.output = []
         self.job.threads = 1
         self.job.resources = Mock()
         self.job.resources.get = Mock(return_value=None)
+        # Mock job.rules() to return an empty list (no script/notebook in these tests)
+        self.job.rules = []
 
         # Setup job_exec_prefix mock - returns the snakemake command
         self.executor.format_job_exec = Mock(

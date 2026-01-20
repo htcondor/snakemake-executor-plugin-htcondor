@@ -139,6 +139,7 @@ class TestGetFilesForTransfer:
 
         # Create mock job
         self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
         self.job.input = []
         self.job.output = []
         self.job.resources = Mock()
@@ -148,6 +149,9 @@ class TestGetFilesForTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        # Mock job.rules() to return an iterable containing the rule
+        # This is needed because the code iterates through job.rules()
+        self.job.rules = [self.job.rule]
 
     def test_snakefile_not_on_shared_fs(self):
         """Test that Snakefile not on shared FS is included in transfer."""
@@ -262,6 +266,8 @@ class TestGetFilesForTransfer:
         self.job.rule = Mock()
         self.job.rule.script = "scripts/process.py"
         self.job.rule.notebook = None
+        # Update job.rules to reflect the new rule
+        self.job.rules = [self.job.rule]
         self.job.wildcards = {}
         self.job.params = {}
         self.job.format_wildcards = Mock(return_value="scripts/process.py")
@@ -277,6 +283,8 @@ class TestGetFilesForTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = "notebooks/analysis.ipynb"
+        # Update job.rules to reflect the new rule
+        self.job.rules = [self.job.rule]
         self.job.wildcards = {}
         self.job.params = {}
         self.job.format_wildcards = Mock(return_value="notebooks/analysis.ipynb")
