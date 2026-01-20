@@ -98,7 +98,7 @@ class Executor(RemoteExecutor):
         # access executor specific settings
         self.workflow.executor_settings
 
-        # jobDir: Directory where the job will tore log, output and error files.
+        # jobDir: Directory where the job will store log, output and error files.
         self.jobDir = self.workflow.executor_settings.jobdir
 
         # Create the job directory immediately so it exists even if no jobs are submitted
@@ -395,17 +395,31 @@ class Executor(RemoteExecutor):
                     )
 
         # Process additional input files from htcondor_transfer_input_files resource
+        # Note: Wildcard expansion is only supported for individual jobs. For grouped jobs,
+        # wildcards cannot be reliably expanded since these resources are defined at the
+        # group level, not per individual job.
         if additional_files := job.resources.get("htcondor_transfer_input_files"):
+            expand_wildcards = not job.is_group()
             for file_path in self._parse_file_list(additional_files):
                 self._add_file_if_transferable(
-                    file_path, transfer_input_files, expand_wildcards=True, job=job
+                    file_path,
+                    transfer_input_files,
+                    expand_wildcards=expand_wildcards,
+                    job=job,
                 )
 
         # Process additional output files from htcondor_transfer_output_files resource
+        # Note: Wildcard expansion is only supported for individual jobs. For grouped jobs,
+        # wildcards cannot be reliably expanded since these resources are defined at the
+        # group level, not per individual job.
         if additional_outputs := job.resources.get("htcondor_transfer_output_files"):
+            expand_wildcards = not job.is_group()
             for file_path in self._parse_file_list(additional_outputs):
                 self._add_file_if_transferable(
-                    file_path, transfer_output_files, expand_wildcards=True, job=job
+                    file_path,
+                    transfer_output_files,
+                    expand_wildcards=expand_wildcards,
+                    job=job,
                 )
 
         # Explicitly handle job_wrapper if specified
@@ -593,7 +607,7 @@ class Executor(RemoteExecutor):
                     f"Expected to start with one of: {sys.executable}, python, or {self.get_python_executable()}. "
                     f"Falling back to naive space-based splitting."
                 )
-                job_args = full_cmd.split(" ", 1)[1] if " " in full_cmd else full_cmd
+                job_args = full_cmd.split(" ", 1)[1] if " " in full_cmd else ""
 
         # Sanitize arguments before returning
         job_args = self._sanitize_job_args(job_args)

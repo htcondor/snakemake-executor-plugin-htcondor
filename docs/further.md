@@ -44,7 +44,7 @@ the job's resources.
 
 \*\*\* Additional input or output files for transfer can be specified using `htcondor_transfer_input_files` and `htcondor_transfer_output_files` resources.
 These are useful for transferring files that aren't part of the rule's `input:`/`output:` directives (e.g., helper scripts, configuration files, logs, intermediate results).
-Supports both string (comma-separated) and list formats, and wildcards will be expanded.
+Supports both string (comma-separated) and list formats. Wildcards (e.g., `{sample}`) are expanded for individual jobs, but **not** for grouped jobs since the resources are defined at the group level.
 Files on shared filesystem prefixes are automatically excluded from transfer.
 
 Example usage:

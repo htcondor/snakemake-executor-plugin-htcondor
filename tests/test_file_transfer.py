@@ -258,8 +258,6 @@ class TestScriptTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
-        # Mock job.rules() to return an iterable containing the rule
-        self.job.rules = [self.job.rule]
 
     def test_script_file_transferred(self):
         """Test that script files are included in transfer list."""
@@ -355,8 +353,6 @@ class TestNotebookTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
-        # Mock job.rules() to return an iterable containing the rule
-        self.job.rules = [self.job.rule]
 
     def test_notebook_file_transferred(self):
         """Test that notebook files are included in transfer list."""
@@ -502,8 +498,6 @@ class TestCustomTransferResources:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
-        # Mock job.rules() to return an iterable containing the rule
-        self.job.rules = [self.job.rule]
 
     def test_htcondor_transfer_input_files_string(self):
         """Test htcondor_transfer_input_files with comma-separated string."""
@@ -566,12 +560,12 @@ class TestCustomTransferResources:
             os.unlink(file2)
 
     def test_htcondor_transfer_input_files_with_wildcards(self):
-        """Test htcondor_transfer_input_files expands wildcards."""
+        """Test htcondor_transfer_input_files expands wildcards for individual jobs."""
         self.job.wildcards = {"module": "stats_helpers"}
         self.job.params = {}
         self.job.format_wildcards = Mock(return_value="scripts/stats_helpers.py")
 
-        # Create the file
+        # Create the file that wildcards will expand to
         os.makedirs("scripts", exist_ok=True)
         with open("scripts/stats_helpers.py", "w") as f:
             f.write("# helper module")
@@ -588,7 +582,9 @@ class TestCustomTransferResources:
 
             transfer_input, _ = self.executor._get_files_for_transfer(self.job)
 
+            # Wildcard expansion SHOULD be called for individual jobs
             self.job.format_wildcards.assert_called()
+            # The expanded path should be in the transfer list
             assert "scripts/stats_helpers.py" in transfer_input
         finally:
             os.unlink("scripts/stats_helpers.py")
@@ -663,8 +659,6 @@ class TestFileTransferLogging:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
-        # Mock job.rules() to return an iterable containing the rule
-        self.job.rules = [self.job.rule]
 
     def test_logs_transfer_summary(self):
         """Test that summary of transfer files is logged."""
