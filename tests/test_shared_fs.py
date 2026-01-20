@@ -2,7 +2,7 @@
 Unit tests for shared filesystem prefix functionality in HTCondor executor.
 """
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from snakemake_executor_plugin_htcondor import is_shared_fs, ExecutorSettings, Executor
 
 
@@ -133,8 +133,8 @@ class TestGetFilesForTransfer:
         self.executor._add_file_if_transferable = (
             Executor._add_file_if_transferable.__get__(self.executor, Executor)
         )
-        self.executor._parse_file_list = (
-            Executor._parse_file_list.__get__(self.executor, Executor)
+        self.executor._parse_file_list = Executor._parse_file_list.__get__(
+            self.executor, Executor
         )
 
         # Create mock job
@@ -142,7 +142,9 @@ class TestGetFilesForTransfer:
         self.job.input = []
         self.job.output = []
         self.job.resources = Mock()
-        self.job.resources.get = Mock(return_value=None)  # Default returns None for all resources
+        self.job.resources.get = Mock(
+            return_value=None
+        )  # Default returns None for all resources
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
@@ -195,11 +197,12 @@ class TestGetFilesForTransfer:
             "/staging/user/shared-file.txt",
             "/home/user/another-file.txt",
         ]
-        
+
         # Set preserve_relative_paths=True to get full paths
         self.job.resources.get = Mock(
-            side_effect=lambda key, default=None:
+            side_effect=lambda key, default=None: (
                 True if key == "preserve_relative_paths" else default
+            )
         )
 
         transfer_input, _ = self.executor._get_files_for_transfer(self.job)
@@ -263,7 +266,9 @@ class TestGetFilesForTransfer:
         self.job.params = {}
         self.job.format_wildcards = Mock(return_value="scripts/process.py")
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        # Mock exists to avoid warnings about non-existent test files
+        with patch("snakemake_executor_plugin_htcondor.exists", return_value=True):
+            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
 
         assert "scripts/process.py" in transfer_input
 
@@ -276,7 +281,9 @@ class TestGetFilesForTransfer:
         self.job.params = {}
         self.job.format_wildcards = Mock(return_value="notebooks/analysis.ipynb")
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        # Mock exists to avoid warnings about non-existent test files
+        with patch("snakemake_executor_plugin_htcondor.exists", return_value=True):
+            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
 
         assert "notebooks/analysis.ipynb" in transfer_input
 
@@ -301,7 +308,7 @@ class TestGetFilesForTransfer:
         self.job.wildcards = {}
         self.job.params = {}
         self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
-        
+
         # Mock resources to return additional input files
         def mock_get(key, default=None):
             if key == "htcondor_transfer_input_files":
@@ -309,12 +316,12 @@ class TestGetFilesForTransfer:
             elif key == "preserve_relative_paths":
                 return True
             return default
-        
+
         self.job.resources.get = Mock(side_effect=mock_get)
 
         # Bind _parse_file_list method
-        self.executor._parse_file_list = (
-            Executor._parse_file_list.__get__(self.executor, Executor)
+        self.executor._parse_file_list = Executor._parse_file_list.__get__(
+            self.executor, Executor
         )
 
         transfer_input, _ = self.executor._get_files_for_transfer(self.job)
@@ -330,7 +337,7 @@ class TestGetFilesForTransfer:
         self.job.wildcards = {}
         self.job.params = {}
         self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
-        
+
         # Mock resources to return additional output files
         def mock_get(key, default=None):
             if key == "htcondor_transfer_output_files":
@@ -338,12 +345,12 @@ class TestGetFilesForTransfer:
             elif key == "preserve_relative_paths":
                 return True
             return default
-        
+
         self.job.resources.get = Mock(side_effect=mock_get)
 
         # Bind _parse_file_list method
-        self.executor._parse_file_list = (
-            Executor._parse_file_list.__get__(self.executor, Executor)
+        self.executor._parse_file_list = Executor._parse_file_list.__get__(
+            self.executor, Executor
         )
 
         _, transfer_output = self.executor._get_files_for_transfer(self.job)
@@ -356,7 +363,7 @@ class TestGetFilesForTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
-        
+
         # Mock resources to return job_wrapper
         def mock_get(key, default=None):
             if key == "job_wrapper":
@@ -364,7 +371,7 @@ class TestGetFilesForTransfer:
             elif key == "preserve_relative_paths":
                 return True
             return default
-        
+
         self.job.resources.get = Mock(side_effect=mock_get)
 
         transfer_input, _ = self.executor._get_files_for_transfer(self.job)

@@ -89,8 +89,10 @@ class TestGetBaseExecAndArgs:
 
         # Should use sys.executable (full path to Python)
         import sys
+
         assert job_exec == sys.executable
-        self.executor.get_python_executable.assert_called_once()
+        # Note: get_python_executable() is only called as a fallback if other
+        # prefix matches fail, so we don't assert it was called
 
     def test_wrapper_strips_snakemake_prefix_from_args(self):
         """Test that with wrapper, 'python -m snakemake ' prefix is stripped."""
@@ -112,9 +114,10 @@ class TestGetBaseExecAndArgs:
         job.resources = Mock()
         job.resources.get = Mock(return_value=None)
         self.executor.get_python_executable = Mock(return_value="/usr/bin/python3")
-        
+
         # Use sys.executable in the mock return value to match reality
         import sys
+
         self.executor.format_job_exec = Mock(
             return_value=f"{sys.executable} -m snakemake --snakefile Snakefile"
         )
@@ -295,4 +298,5 @@ class TestJobWrapperEdgeCases:
 
         # Empty string is falsy, so should use sys.executable
         import sys
+
         assert job_exec == sys.executable

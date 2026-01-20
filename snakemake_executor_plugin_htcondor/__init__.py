@@ -13,11 +13,10 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 import traceback
-from os.path import join, isabs, relpath, basename, abspath, normpath, exists
+from os.path import join, isabs, relpath, normpath, exists
 from os import makedirs, sep
 import re
 import sys
-import logging
 
 
 def is_shared_fs(in_path, shared_prefixes) -> bool:
@@ -171,7 +170,7 @@ class Executor(RemoteExecutor):
         """
         # Explicitly handle empty/None filepaths
         if file_path is None or str(file_path).strip() == "":
-            self.logger.debug(f"Skipping empty or None filepath")
+            self.logger.debug("Skipping empty or None filepath")
             return
 
         file_path = str(file_path).strip()
@@ -470,7 +469,13 @@ class Executor(RemoteExecutor):
                     job_args = full_cmd.removeprefix(prefix)
                     break
             else:
-                # Fallback: just remove up to "-m"
+                # Fallback: no known prefix matched
+                # This is unexpected and might indicate a problem with command formatting
+                self.logger.warning(
+                    f"Could not strip Python executable prefix from command: '{full_cmd}'. "
+                    f"Expected to start with one of: {sys.executable}, python, or {self.get_python_executable()}. "
+                    f"Falling back to naive space-based splitting."
+                )
                 job_args = full_cmd.split(" ", 1)[1] if " " in full_cmd else full_cmd
 
         # Sanitize arguments before returning
