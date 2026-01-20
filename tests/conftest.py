@@ -65,6 +65,7 @@ def create_mock_individual_job(
     """
     job = Mock()
     job.is_group = Mock(return_value=False)
+    job.name = "test_individual_job"
     job.input = input_files or []
     job.output = output_files or []
     job.wildcards = wildcards or {}
