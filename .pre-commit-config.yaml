@@ -35,7 +35,9 @@ repos:
     hooks:
     -   id: mdformat
         name: Format markdown files
-        args: [--wrap, "no"]
+        additional_dependencies:
+        -   mdformat-simple-breaks
+        args: [--wrap, "keep"] #leaves line breaks exactly as what's written
         files: \.md$
-        #excluding docs as well to prevent unintentionally break in text format
+        #excluding docs as well to prevent unintentional break in text format
         exclude: (\.mdx$|^docs)
