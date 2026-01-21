@@ -292,6 +292,115 @@ class Executor(RemoteExecutor):
         else:
             return list(files_spec)
 
+    def _format_size_mb(self, mb_value: int) -> str:
+        """
+        Format a size value in MB to a human-readable string for HTCondor.
+
+        Args:
+            mb_value: Size value in megabytes (must be non-negative)
+
+        Returns:
+            Formatted string like "1024MB" or "4GB"
+        """
+        if mb_value < 0:
+            raise WorkflowError(
+                f"Invalid resource value {mb_value}MB: value must be non-negative."
+            )
+        if mb_value >= 1024 and mb_value % 1024 == 0:
+            return f"{mb_value // 1024}GB"
+        return f"{mb_value}MB"
+
+    def _handle_explicit_unit_resources(
+        self, job: JobExecutorInterface, submit_dict: dict
+    ) -> None:
+        """
+        Handle HTCondor-specific resource parameters with explicit MB units.
+
+        These parameters are designed for use with grouped jobs where Snakemake
+        aggregates numeric resources by summing values for jobs that run in parallel
+        within each execution layer and then taking the maximum total across all
+        sequential layers. They take precedence over the standard HTCondor parameters
+        (request_memory, request_disk, gpus_minimum_memory) when both are specified.
+
+        Args:
+            job: The job being prepared for submission
+            submit_dict: The submit description dictionary to update
+        """
+        # htcondor_request_mem_mb -> request_memory (in MB, which is HTCondor's default)
+        if htcondor_mem_mb := job.resources.get("htcondor_request_mem_mb"):
+            if job.resources.get("request_memory"):
+                self.logger.warning(
+                    f"Both 'htcondor_request_mem_mb' ({htcondor_mem_mb}) and "
+                    f"'request_memory' ({job.resources.get('request_memory')}) are set. "
+                    f"Using htcondor_request_mem_mb value."
+                )
+            formatted_mem = self._format_size_mb(int(htcondor_mem_mb))
+            submit_dict["request_memory"] = formatted_mem
+
+        # htcondor_request_disk_mb -> request_disk (convert MB to KB for HTCondor)
+        if htcondor_disk_mb := job.resources.get("htcondor_request_disk_mb"):
+            if job.resources.get("request_disk"):
+                self.logger.warning(
+                    f"Both 'htcondor_request_disk_mb' ({htcondor_disk_mb}) and "
+                    f"'request_disk' ({job.resources.get('request_disk')}) are set. "
+                    f"Using htcondor_request_disk_mb value."
+                )
+            # HTCondor's request_disk expects KB, so convert from MB
+            disk_kb = int(htcondor_disk_mb) * 1024
+            submit_dict["request_disk"] = disk_kb
+
+        # htcondor_gpus_min_mem_mb -> gpus_minimum_memory (in MB, HTCondor's default)
+        if htcondor_gpu_mem_mb := job.resources.get("htcondor_gpus_min_mem_mb"):
+            if job.resources.get("gpus_minimum_memory"):
+                self.logger.warning(
+                    f"Both 'htcondor_gpus_min_mem_mb' ({htcondor_gpu_mem_mb}) and "
+                    f"'gpus_minimum_memory' ({job.resources.get('gpus_minimum_memory')}) "
+                    f"are set. Using htcondor_gpus_min_mem_mb value."
+                )
+            submit_dict["gpus_minimum_memory"] = int(htcondor_gpu_mem_mb)
+
+    def _log_resource_requests(self, submit_dict: dict) -> None:
+        """
+        Log the final resource requests with human-readable units.
+
+        This is called after all resources have been set in submit_dict,
+        so it logs the actual values that will be submitted to HTCondor
+        regardless of whether they came from htcondor_* or standard parameters.
+
+        Args:
+            submit_dict: The submit description dictionary with final values
+        """
+        # Log memory request (HTCondor accepts values in MB by default)
+        if request_memory := submit_dict.get("request_memory"):
+            # Value might already be formatted (e.g., "4GB") or numeric
+            if isinstance(request_memory, (int, float)):
+                formatted_mem = self._format_size_mb(int(request_memory))
+                self.logger.info(f"Requesting memory: {formatted_mem}")
+            else:
+                self.logger.info(f"Requesting memory: {request_memory}")
+
+        # Log disk request (HTCondor expects KB, we convert to human-readable)
+        if request_disk := submit_dict.get("request_disk"):
+            if isinstance(request_disk, (int, float)):
+                # Value is in KB, convert to MB for formatting
+                disk_mb = int(request_disk) // 1024
+                formatted_disk = self._format_size_mb(disk_mb)
+                self.logger.info(
+                    f"Requesting disk: {formatted_disk} ({int(request_disk)} KB)"
+                )
+            else:
+                self.logger.info(f"Requesting disk: {request_disk}")
+
+        # Log GPU memory request (HTCondor accepts values in MB)
+        if gpus_minimum_memory := submit_dict.get("gpus_minimum_memory"):
+            if isinstance(gpus_minimum_memory, (int, float)):
+                formatted_gpu_mem = self._format_size_mb(int(gpus_minimum_memory))
+                self.logger.info(f"Requesting GPU minimum memory: {formatted_gpu_mem}")
+            else:
+                self.logger.info(
+                    f"Requesting GPU minimum memory: {gpus_minimum_memory}"
+                )
+
     def _get_files_for_transfer(
         self, job: JobExecutorInterface
     ) -> tuple[List[str], List[str]]:
@@ -796,12 +905,19 @@ class Executor(RemoteExecutor):
             if job.resources.get(key):
                 submit_dict[key] = job.resources.get(key)
 
+        # HTCondor-specific resource parameters with explicit units (MB)
+        # These take precedence over the standard HTCondor parameters when both are set.
+        # They're designed for use with grouped jobs where Snakemake can aggregate numeric values
+        # (summing resources across jobs running in parallel within each layer, then taking the
+        # maximum across all sequential layers in the group).
+        self._handle_explicit_unit_resources(job, submit_dict)
+
         # Commands for matchmaking (GPU)
         for key in [
             "request_gpus",
             "require_gpus",
             "gpus_minimum_capability",
-            "gpus_minimum_memory ",
+            "gpus_minimum_memory",
             "gpus_minimum_runtime",
             "cuda_version",
         ]:
@@ -832,6 +948,10 @@ class Executor(RemoteExecutor):
                     submit_dict[classad_key] = f'"{value}"'
                 else:
                     submit_dict[classad_key] = value
+
+        # Log resource requests with human-readable units
+        self._log_resource_requests(submit_dict)
+
         # HTCondor submit description
         self.logger.debug(f"HTCondor submit subscription: {submit_dict}")
         submit_description = htcondor.Submit(submit_dict)

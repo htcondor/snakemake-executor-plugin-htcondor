@@ -22,6 +22,12 @@ The following [submit description file commands](https://htcondor.readthedocs.io
 | `htcondor_transfer_input_files`*** |                  |                           |                            |
 | `htcondor_transfer_output_files`***|                  |                           |                            |
 
+Additionally, the following **executor-specific resources** are available with explicit units (see [Resources with Explicit Units](#resources-with-explicit-units) below):
+| Resource                      | Description                           | Equivalent HTCondor Command |
+| ----------------------------- | ------------------------------------- | --------------------------- |
+| `htcondor_request_mem_mb`     | Request memory in MB                  | `request_memory`            |
+| `htcondor_request_disk_mb`    | Request disk in MB                    | `request_disk`              |
+| `htcondor_gpus_min_mem_mb`    | GPU minimum memory in MB              | `gpus_minimum_memory`       |
 
 \* A custom-defined `job_wrapper` resource will be used as the HTCondor executable for the job. It can be used for environment setup, but must pass all arguments
   to snakemake on the EP. For example, the following is a valid bash script wrapper:
@@ -57,6 +63,150 @@ rule process:
         htcondor_transfer_output_files="logs/{sample}.log"
     script: "scripts/process.py"
 ```
+
+## Resources with Explicit Units
+
+Snakemake's [rule grouping](https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#group-jobs) feature allows multiple rules to be bundled and submitted as a single job.
+However, when rules are grouped, Snakemake requires that **string resources have identical values** across all grouped rules, while **numeric resources can be aggregated**.
+
+This creates a problem with HTCondor's `request_memory` and `request_disk` parameters, which are typically specified as strings like `"8GB"` or `"16GB"`.
+If you try to group rules with different memory or disk requirements, Snakemake will raise an error because the string values don't match.
+
+The executor-specific resources solve this by accepting **numeric values in MB** that can be aggregated for grouped jobs:
+
+| Resource                      | Input Unit | Output to HTCondor | Notes                                   |
+| ----------------------------- | ---------- | ------------------ | --------------------------------------- |
+| `htcondor_request_mem_mb`     | MB         | `request_memory`   | Formatted as "8GB" or "512MB"           |
+| `htcondor_request_disk_mb`    | MB         | `request_disk`     | Converted to KB for HTCondor's default  |
+| `htcondor_gpus_min_mem_mb`    | MB         | `gpus_minimum_memory` | Formatted as "8GB" or "512MB"        |
+
+### How Snakemake Aggregates Grouped Resources
+
+When Snakemake calculates resources for a group job, it:
+1. Determines which jobs run in **parallel** (same layer) vs in **series** (different layers)
+2. **Sums** resources across jobs that run in parallel within each layer
+3. Takes the **max** across all sequential layers
+
+For a **linear chain** (A → B → C, all in series), this is simply `max(A, B, C)`.
+For a **fan-out** pattern where jobs run in parallel, those parallel resources are summed first.
+
+See the [Snakemake documentation on Resources and Group Jobs](https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#resources-and-group-jobs) for more details.
+
+### Linear Chain Example (Series Execution)
+
+In a **linear chain**, rules depend on each other's outputs, forcing them to run sequentially:
+
+```python
+# Linear chain: step_one → step_two (dependency creates serial execution)
+rule step_one:
+    input: "data/{sample}.txt"
+    output: "intermediate/{sample}.tmp"  # This output becomes step_two's input ← KEY!
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=4096,    # 4GB
+        htcondor_request_disk_mb=8192    # 8GB
+    shell: "process_step1 {input} > {output}"
+
+rule step_two:
+    input: "intermediate/{sample}.tmp"   # Depends on step_one's output ← KEY!
+    output: "results/{sample}.out"
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=8192,    # 8GB
+        htcondor_request_disk_mb=4096    # 4GB
+    shell: "process_step2 {input} > {output}"
+```
+
+**Why this is a linear chain:** `step_two` requires `step_one`'s output, so they **must** run one after another (in series). Snakemake detects this dependency automatically from the input/output declarations.
+
+When these rules are grouped as a linear chain (running in series), Snakemake takes the **max**:
+- Memory: max(4096, 8192) = 8192 MB → HTCondor receives `request_memory = "8GB"`
+- Disk: max(8192, 4096) = 8192 MB → HTCondor receives `request_disk = "8388608"` (in KB)
+
+### Fan-Out Example (Parallel Jobs)
+
+For workflows with **fan-out patterns** where multiple rules share the same input but produce different outputs, those rules can run **in parallel**:
+
+```python
+# Layer 1: Single job
+rule prepare:
+    input: "data/raw.txt"
+    output: "data/prepared.txt"  # This output is shared by all analyze_* rules ← KEY!
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=2048,    # 2GB
+        htcondor_request_disk_mb=4096    # 4GB
+    shell: "prepare_data {input} > {output}"
+
+# Layer 2: Three jobs run in PARALLEL
+rule analyze_part_a:
+    input: "data/prepared.txt"   # Same input ← KEY!
+    output: "results/part_a.txt"  # Different output ← KEY!
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=4096,    # 4GB each
+        htcondor_request_disk_mb=2048    # 2GB each
+    shell: "analyze_a {input} > {output}"
+
+rule analyze_part_b:
+    input: "data/prepared.txt"   # Same input ← KEY!
+    output: "results/part_b.txt"  # Different output ← KEY!
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=4096,    # 4GB each
+        htcondor_request_disk_mb=2048    # 2GB each
+    shell: "analyze_b {input} > {output}"
+
+rule analyze_part_c:
+    input: "data/prepared.txt"   # Same input ← KEY!
+    output: "results/part_c.txt"  # Different output ← KEY!
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=4096,    # 4GB each
+        htcondor_request_disk_mb=2048    # 2GB each
+    shell: "analyze_c {input} > {output}"
+
+# Layer 3: Combine results
+rule combine:
+    input: "results/part_a.txt", "results/part_b.txt", "results/part_c.txt"
+    output: "final_results.txt"
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=2048,    # 2GB
+        htcondor_request_disk_mb=4096    # 4GB
+    shell: "combine_results {input} > {output}"
+```
+
+**Why this creates parallel execution:** All three `analyze_*` rules take the **same input** (`data/prepared.txt`) but produce **different outputs**. Since they don't depend on each other (no rule needs another's output), Snakemake can run them simultaneously in parallel.
+
+**The critical difference from the linear chain:**
+- **Linear chain**: Rule A's output → Rule B's input (dependency = **series**)
+- **Fan-out**: Multiple rules with same input, different outputs (no interdependency = **parallel**)
+
+For this fan-out workflow, Snakemake calculates resources by layer:
+
+- **Layer 1** (`prepare`): 2048 MB memory, 4096 MB disk
+- **Layer 2** (`analyze_part_a/b/c` in parallel): **sum** the three parallel jobs = 12288 MB memory, 6144 MB disk
+- **Layer 3** (`combine`): 2048 MB memory, 4096 MB disk
+
+Then takes **max** across all layers:
+- Memory: max(2048, 12288, 2048) = **12288 MB → `request_memory = "12GB"`**
+- Disk: max(4096, 6144, 4096) = **6144 MB → `request_disk = "6291456"` (in KB)**
+
+**Key Insight:** The parallel layer determines the total resource needs, not the individual jobs. If any parallel layer needs significant resources, the entire grouped job must request enough to handle that layer running simultaneously.
+
+### Precedence
+
+If both the explicit unit resource and the standard HTCondor resource are specified for the same job, the explicit unit resource takes precedence:
+
+```python
+rule example:
+    resources:
+        request_memory="4GB",              # This will be ignored
+        htcondor_request_mem_mb=8192       # This takes precedence (8GB)
+```
+
+When this happens, the executor logs a warning to alert you that both resources are set and which one is being used.
 
 ## Jobs Without Shared Filesystems
 
