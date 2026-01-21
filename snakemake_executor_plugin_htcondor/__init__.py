@@ -297,11 +297,15 @@ class Executor(RemoteExecutor):
         Format a size value in MB to a human-readable string for HTCondor.
 
         Args:
-            mb_value: Size value in megabytes
+            mb_value: Size value in megabytes (must be non-negative)
 
         Returns:
             Formatted string like "1024MB" or "4GB"
         """
+        if mb_value < 0:
+            raise WorkflowError(
+                f"Invalid resource value {mb_value}MB: value must be non-negative."
+            )
         if mb_value >= 1024 and mb_value % 1024 == 0:
             return f"{mb_value // 1024}GB"
         return f"{mb_value}MB"
@@ -313,8 +317,9 @@ class Executor(RemoteExecutor):
         Handle HTCondor-specific resource parameters with explicit MB units.
 
         These parameters are designed for use with grouped jobs where Snakemake
-        can aggregate numeric values (taking the maximum since grouped jobs run
-        sequentially). They take precedence over the standard HTCondor parameters
+        aggregates numeric resources by summing values for jobs that run in parallel
+        within each execution layer and then taking the maximum total across all
+        sequential layers. They take precedence over the standard HTCondor parameters
         (request_memory, request_disk, gpus_minimum_memory) when both are specified.
 
         Args:
@@ -903,7 +908,8 @@ class Executor(RemoteExecutor):
         # HTCondor-specific resource parameters with explicit units (MB)
         # These take precedence over the standard HTCondor parameters when both are set.
         # They're designed for use with grouped jobs where Snakemake can aggregate numeric values
-        # (taking the maximum for sequential execution within a group).
+        # (summing resources across jobs running in parallel within each layer, then taking the
+        # maximum across all sequential layers in the group).
         self._handle_explicit_unit_resources(job, submit_dict)
 
         # Commands for matchmaking (GPU)
