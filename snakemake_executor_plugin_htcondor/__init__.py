@@ -809,8 +809,9 @@ class Executor(RemoteExecutor):
                 submit_dict[key] = job.resources.get(key)
 
         # Policy commands
-        if job.resources.get("max_retries"):
-            submit_dict["max_retries"] = job.resources.get("max_retries")
+        max_retries = job.resources.get("max_retries")
+        if max_retries is not None:
+            submit_dict["max_retries"] = max_retries
         else:
             submit_dict["max_retries"] = 5
 
