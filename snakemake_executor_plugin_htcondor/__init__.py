@@ -796,12 +796,18 @@ class Executor(RemoteExecutor):
             if job.resources.get(key):
                 submit_dict[key] = job.resources.get(key)
 
+        # HTCondor-specific resource parameters with explicit units (MB)
+        # These take precedence over the standard HTCondor parameters when both are set.
+        # They're designed for use with grouped jobs where Snakemake can aggregate numeric values
+        # (taking the maximum for sequential execution within a group).
+        self._handle_explicit_unit_resources(job, submit_dict)
+
         # Commands for matchmaking (GPU)
         for key in [
             "request_gpus",
             "require_gpus",
             "gpus_minimum_capability",
-            "gpus_minimum_memory ",
+            "gpus_minimum_memory",
             "gpus_minimum_runtime",
             "cuda_version",
         ]:
