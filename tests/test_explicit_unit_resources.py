@@ -68,6 +68,14 @@ class TestFormatSizeMB(TestExplicitUnitResources):
         """Test formatting zero value."""
         assert self.executor._format_size_mb(0) == "0MB"
 
+    def test_format_size_mb_negative_raises_error(self):
+        """Test that negative values raise WorkflowError."""
+        from snakemake_interface_common.exceptions import WorkflowError
+
+        with self.assertRaises(WorkflowError) as context:
+            self.executor._format_size_mb(-1024)
+        self.assertIn("must be non-negative", str(context.exception))
+
 
 class TestHandleExplicitUnitResources(TestExplicitUnitResources):
     """Tests for _handle_explicit_unit_resources method."""
