@@ -702,6 +702,25 @@ class Executor(RemoteExecutor):
 
         return job_exec, job_args, transfer_input_files, transfer_output_files
 
+    def _set_resources(
+        self, submit_dict: dict, job: JobExecutorInterface, key: str, default=None
+    ):
+        """
+        Set submit_dict[key] from the job resources so that false values are correctly handled
+
+        Args:
+            submit_dict: The HTCondor submit description dictionary
+            job: The Snakemake job being prepared for submission
+            key: The resource attribute name to extract and set
+            default: Value to use if resource is not defined
+
+        """
+        value = job.resources.get(key)
+        if value is not None:
+            submit_dict[key] = value
+        elif default is not None:
+            submit_dict[key] = default
+
     def run_job(self, job: JobExecutorInterface):
         # Submitting job to HTCondor
 
@@ -774,17 +793,12 @@ class Executor(RemoteExecutor):
                 )
 
         # Basic commands
-        if job.resources.get("getenv"):
-            submit_dict["getenv"] = job.resources.get("getenv")
-        else:
-            submit_dict["getenv"] = False
+        self._set_resources(submit_dict, job, "getenv", default=False)
 
-        if job.resources.get("preserve_relative_paths", True):
-            submit_dict["preserve_relative_paths"] = True
+        self._set_resources(submit_dict, job, "preserve_relative_paths", default=True)
 
         for key in ["environment", "input", "max_materialize", "max_idle"]:
-            if job.resources.get(key):
-                submit_dict[key] = job.resources.get(key)
+            self._set_resources(submit_dict, job, key)
 
         # Commands for matchmaking
         for key in [
@@ -793,8 +807,7 @@ class Executor(RemoteExecutor):
             "request_memory",
             "requirements",
         ]:
-            if job.resources.get(key):
-                submit_dict[key] = job.resources.get(key)
+            self._set_resources(submit_dict, job, key)
 
         # Commands for matchmaking (GPU)
         for key in [
@@ -805,19 +818,13 @@ class Executor(RemoteExecutor):
             "gpus_minimum_runtime",
             "cuda_version",
         ]:
-            if job.resources.get(key):
-                submit_dict[key] = job.resources.get(key)
+            self._set_resources(submit_dict, job, key)
 
         # Policy commands
-        max_retries = job.resources.get("max_retries")
-        if max_retries is not None:
-            submit_dict["max_retries"] = max_retries
-        else:
-            submit_dict["max_retries"] = 5
+        self._set_resources(submit_dict, job, "max_retries", default=5)
 
         for key in ["allowed_execute_duration", "allowed_job_duration", "retry_until"]:
-            if job.resources.get(key):
-                submit_dict[key] = job.resources.get(key)
+            self._set_resources(submit_dict, job, key)
 
         # Name the jobs in the queue something that tells us what the job is
         submit_dict["batch_name"] = f"{job.name}-{job.jobid}"
