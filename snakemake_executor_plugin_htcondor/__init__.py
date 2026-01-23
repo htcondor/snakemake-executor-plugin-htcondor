@@ -214,6 +214,7 @@ class Executor(RemoteExecutor):
                 f"File marked for transfer does not exist: {file_path}. "
                 "This will likely cause job failure."
             )
+            return
 
         self.logger.debug(f"Adding file to transfer list: {file_path}")
         transfer_list.append(file_path)
