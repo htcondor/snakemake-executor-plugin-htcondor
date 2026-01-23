@@ -937,7 +937,7 @@ class Executor(RemoteExecutor):
             self._set_resources(submit_dict, job, key)
 
         # Policy commands
-        self._set_resources(submit_dict, job, "max_retries", default=5)
+        self._set_resources(submit_dict, job, "max_retries")
 
         for key in ["allowed_execute_duration", "allowed_job_duration", "retry_until"]:
             self._set_resources(submit_dict, job, key)
