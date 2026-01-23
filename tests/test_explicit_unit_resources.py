@@ -360,5 +360,89 @@ class TestLogResourceRequests(TestExplicitUnitResources):
         self.executor.logger.info.assert_any_call("Requesting GPU minimum memory: 4GB")
 
 
+class TestSetResources(TestExplicitUnitResources):
+    """Tests for _set_resources helper method."""
+
+    def setUp(self):
+        """Set up mock executor for testing."""
+        super().setUp()
+        # Bind the _set_resources method
+        self.executor._set_resources = Executor._set_resources.__get__(
+            self.executor, Executor
+        )
+
+    def test_set_resources_with_value(self):
+        """When resource has a value, it should be set properly."""
+        self.job.resources = Mock()
+        self.job.resources.get = self._create_resource_getter({"request_memory": "4GB"})
+
+        # initialize submit_dict
+        submit_dict = {}
+
+        # call the _set_resources and set a value
+        self.executor._set_resources(submit_dict, self.job, "request_memory")
+
+        # verify result
+        assert submit_dict["request_memory"] == "4GB"
+
+    def test_set_resources_with_falsy_value_zero(self):
+        """When corresponding resource has a value 0, it should be set properly."""
+        self.job.resources = Mock()
+        self.job.resources.get = self._create_resource_getter({"max_retries": 0})
+
+        # initialize submit_dict
+        submit_dict = {}
+
+        # call the _set_resources and set a value
+        self.executor._set_resources(submit_dict, self.job, "max_retries")
+
+        # verify result
+        assert submit_dict["max_retries"] == 0
+
+    def test_set_resources_with_falsy_value_false(self):
+        """When corresponding resource has a value False, it should be set properly."""
+        self.job.resources = Mock()
+        self.job.resources.get = self._create_resource_getter(
+            {"preserve_relative_paths": False}
+        )
+
+        # initialize submit_dict
+        submit_dict = {}
+
+        # call the _set_resources and set a value
+        self.executor._set_resources(submit_dict, self.job, "preserve_relative_paths")
+
+        # verify result
+        assert not submit_dict["preserve_relative_paths"]
+
+    def test_set_resources_with_default(self):
+        """When corresponding resource has a default value, it should be set properly."""
+        self.job.resources = Mock()
+        self.job.resources.get = self._create_resource_getter({})
+
+        # initialize submit_dict
+        submit_dict = {}
+
+        # call the _set_resources and set a value
+        self.executor._set_resources(submit_dict, self.job, "getenv", default=False)
+
+        # verify result
+        assert not submit_dict["getenv"]
+
+    def test_set_resources_with_no_default(self):
+        """When corresponding resource has no default value, it should not exist in submit_dict."""
+        self.job.resources = Mock()
+        self.job.resources.get = self._create_resource_getter({})
+
+        # initialize submit_dict
+        submit_dict = {}
+
+        # call the _set_resources and set a value
+        self.executor._set_resources(submit_dict, self.job, "max_retries")
+
+        # verify result
+        assert "max_retries" not in submit_dict
+
+
 if __name__ == "__main__":
     unittest.main()
