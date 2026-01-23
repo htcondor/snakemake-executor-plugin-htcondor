@@ -925,6 +925,13 @@ class Executor(RemoteExecutor):
         # maximum across all sequential layers in the group).
         self._handle_explicit_unit_resources(job, submit_dict)
 
+        # HTCondor-specific resource parameters with explicit units (MB)
+        # These take precedence over the standard HTCondor parameters when both are set.
+        # They're designed for use with grouped jobs where Snakemake can aggregate numeric values
+        # (summing resources across jobs running in parallel within each layer, then taking the
+        # maximum across all sequential layers in the group).
+        self._handle_explicit_unit_resources(job, submit_dict)
+
         # Commands for matchmaking (GPU)
         for key in [
             "request_gpus",

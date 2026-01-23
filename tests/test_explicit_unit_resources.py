@@ -359,7 +359,6 @@ class TestLogResourceRequests(TestExplicitUnitResources):
         )
         self.executor.logger.info.assert_any_call("Requesting GPU minimum memory: 4GB")
 
-
 class TestSetResources(TestExplicitUnitResources):
     """Tests for _set_resources helper method."""
 
@@ -442,7 +441,6 @@ class TestSetResources(TestExplicitUnitResources):
 
         # verify result
         assert "max_retries" not in submit_dict
-
 
 if __name__ == "__main__":
     unittest.main()
