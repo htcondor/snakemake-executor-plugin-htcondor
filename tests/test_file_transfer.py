@@ -1012,3 +1012,59 @@ rule quality_check:
         assert level1_snakefile in transfer_list
         assert level2_snakefile in transfer_list
         assert level3_snakefile in transfer_list
+
+
+class TestAbsolutePathWarning:
+    """Test warning when absolute paths are used with preserve_relative_paths is True"""
+
+    def setup_method(self):
+        self.executor = Mock(spec=Executor)
+        self.executor.logger = Mock()
+        self.executor.shared_fs_prefixes = []
+        self.executor.workflow = Mock()
+        self.executor.workflow.configfiles = []
+        self.executor.get_snakefile = Mock(return_value="Snakefile")
+
+        # Bind the actual methods to our mock
+        self.executor._get_files_for_transfer = (
+            Executor._get_files_for_transfer.__get__(self.executor, Executor)
+        )
+        self.executor._add_file_if_transferable = (
+            Executor._add_file_if_transferable.__get__(self.executor, Executor)
+        )
+
+        # Create mock job
+        self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
+        self.job.input = []
+        self.job.output = []
+        self.job.resources = Mock()
+        self.job.resources.get = Mock(return_value=None)
+        self.job.rule = Mock()
+        self.job.rule.script = None
+        self.job.rule.notebook = None
+
+    def test_warns_on_absolute_paths(self):
+        # Create a temporary file with an absolute path
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            abs_path = tmp.name  # This is an absolute path like /tmp/xxx
+
+        try:
+            # Set preserve_relative_paths = True using lambda function
+            self.job.resources.get = Mock(
+                side_effect=lambda key, default=None: (
+                    True if key == "preserve_relative_paths" else default
+                )
+            )
+            # Add the absolute path to transfer
+            self.job.input = [abs_path]
+
+            # Call _get_files_for_transfer
+            self.executor._get_files_for_transfer(self.job)
+
+            # Check for warning about absolute path / flattening
+            self.executor.logger.warning.assert_called()
+            warning_msg = self.executor.logger.warning.call_args[0][0]
+            assert "absolute" in warning_msg.lower() or "flatten" in warning_msg.lower()
+        finally:
+            os.unlink(abs_path)  # delete
