@@ -1,1 +1,0 @@
-The [HTCondor Software Suite (HTCSS)](https://htcondor.org/) is a software system that creates a High-Throughput Computing (HTC) environment. This environment might be a single cluster, a set of related clusters on a campus, cloud resources, or national or international federations of computers.
