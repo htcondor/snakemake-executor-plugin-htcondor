@@ -176,11 +176,31 @@ class Executor(RemoteExecutor):
             if held_timeout_setting is not None
             else DEFAULT_HELD_TIMEOUT_SECONDS
         )
+
+        # Validate held_timeout - negative values would cause immediate timeout
+        if self._held_timeout < 0:
+            raise WorkflowError(
+                f"Invalid held_timeout value {self._held_timeout}: must be >= 0. "
+                "Use 0 to fail immediately on held jobs, or a positive value "
+                "for the number of seconds to wait before failing."
+            )
+
         if self._held_timeout > 0:
             self.logger.debug(
                 f"Held job timeout set to {self._held_timeout} seconds "
                 f"({self._held_timeout / 3600:.1f} hours)"
             )
+
+        # Track when the workflow started for efficient condor_history queries.
+        # We use this with the -since option to avoid scanning the entire history.
+        self._workflow_start_time = int(time.time())
+
+        # Track jobs that have missing log files and need schedd/history fallback.
+        # Key: cluster_id, Value: number of consecutive log-missing checks
+        self._log_missing_counts: Dict[int, int] = {}
+
+        # Number of consecutive missing log checks before using fallback
+        self._log_missing_threshold = 3
 
     def _validate_shared_fs_configuration(self):
         """Validate and warn about potentially confusing shared FS configuration."""
@@ -1113,6 +1133,233 @@ class Executor(RemoteExecutor):
         if cluster_id in self._job_current_states:
             del self._job_current_states[cluster_id]
 
+        # Remove from log-missing tracking
+        if cluster_id in self._log_missing_counts:
+            del self._log_missing_counts[cluster_id]
+
+    def _htcondor_status_to_job_status(self, job_status: int) -> JobStatus:
+        """
+        Convert HTCondor's numeric JobStatus to our JobStatus enum.
+
+        HTCondor JobStatus values:
+        1 = Idle, 2 = Running, 3 = Removed, 4 = Completed, 5 = Held,
+        6 = Transferring Output, 7 = Suspended
+
+        Args:
+            job_status: HTCondor's numeric JobStatus value
+
+        Returns:
+            Corresponding JobStatus enum value
+        """
+        status_map = {
+            1: JobStatus.IDLE,
+            2: JobStatus.RUNNING,
+            3: JobStatus.REMOVED,
+            4: JobStatus.COMPLETED,
+            5: JobStatus.HELD,
+            6: JobStatus.TRANSFERRING,
+            7: JobStatus.SUSPENDED,
+        }
+        return status_map.get(job_status, JobStatus.PENDING)
+
+    def _batch_query_schedd(self, cluster_ids: List[int]) -> Dict[int, dict]:
+        """
+        Query the schedd for multiple jobs' current status in a single call.
+
+        This is a fallback method used when job log files are not available.
+        By batching multiple job queries into one schedd call, we avoid the
+        sequential blocking problem where each job's query must complete
+        before the next can start.
+
+        Args:
+            cluster_ids: List of HTCondor ClusterIds to query
+
+        Returns:
+            Dict mapping cluster_id to job state info for jobs found in schedd.
+            Jobs not in schedd will not have entries in the result.
+        """
+        if not cluster_ids:
+            return {}
+
+        results = {}
+        try:
+            schedd = htcondor.Schedd()
+            # Build a constraint that matches any of the cluster IDs
+            # e.g., "ClusterId == 123 || ClusterId == 456 || ClusterId == 789"
+            constraint_parts = [f"ClusterId == {cid}" for cid in cluster_ids]
+            constraint = " || ".join(constraint_parts)
+            projection = [
+                "ClusterId",
+                "JobStatus",
+                "HoldReason",
+                "ExitCode",
+                "ExitBySignal",
+                "ExitSignal",
+            ]
+
+            self.logger.debug(
+                f"Batch schedd query for {len(cluster_ids)} jobs: {cluster_ids}"
+            )
+
+            jobs = list(schedd.query(constraint=constraint, projection=projection))
+
+            for job in jobs:
+                cluster_id = job.get("ClusterId")
+                if cluster_id is None:
+                    continue
+
+                htcondor_status = job.get("JobStatus", 1)
+                status = self._htcondor_status_to_job_status(htcondor_status)
+
+                results[cluster_id] = {
+                    "status": status,
+                    "exit_code": job.get("ExitCode"),
+                    "exit_by_signal": bool(job.get("ExitBySignal", False)),
+                    "exit_signal": job.get("ExitSignal"),
+                    "hold_reason": job.get("HoldReason"),
+                    "held_since": time.time() if status == JobStatus.HELD else None,
+                }
+
+            self.logger.debug(
+                f"Batch schedd query found {len(results)} of {len(cluster_ids)} jobs"
+            )
+
+        except Exception as e:
+            self.logger.warning(f"Error in batch schedd query: {e}")
+
+        return results
+
+    def _batch_query_history(self, cluster_ids: List[int]) -> Dict[int, dict]:
+        """
+        Query condor_history for multiple completed jobs in a single call.
+
+        This is a fallback method used when jobs are no longer in the schedd
+        (already completed) and log files are not available. Uses the -since
+        option to limit the scan to jobs completed after the workflow started.
+
+        Args:
+            cluster_ids: List of HTCondor ClusterIds to query
+
+        Returns:
+            Dict mapping cluster_id to job state info for jobs found in history.
+            Jobs not in history will not have entries in the result.
+        """
+        if not cluster_ids:
+            return {}
+
+        results = {}
+        try:
+            schedd = htcondor.Schedd()
+            # Build a constraint that matches any of the cluster IDs
+            constraint_parts = [f"ClusterId == {cid}" for cid in cluster_ids]
+            constraint = " || ".join(constraint_parts)
+            projection = [
+                "ClusterId",
+                "JobStatus",
+                "ExitCode",
+                "ExitBySignal",
+                "ExitSignal",
+                "HoldReason",
+            ]
+
+            self.logger.debug(
+                f"Batch history query for {len(cluster_ids)} jobs: {cluster_ids}"
+            )
+
+            # Use since= to limit the history scan to jobs that completed
+            # after the workflow started. This avoids scanning the entire history.
+            # Note: match= limits total results, so we set it high enough
+            # to potentially find all the jobs we're looking for.
+            jobs = list(
+                schedd.history(
+                    constraint=constraint,
+                    projection=projection,
+                    since=self._workflow_start_time,
+                    match=len(cluster_ids),
+                )
+            )
+
+            for job in jobs:
+                cluster_id = job.get("ClusterId")
+                if cluster_id is None:
+                    continue
+
+                htcondor_status = job.get("JobStatus", 4)  # Default to Completed
+                status = self._htcondor_status_to_job_status(htcondor_status)
+
+                # History entries are typically completed/removed jobs
+                if status not in (JobStatus.COMPLETED, JobStatus.REMOVED):
+                    status = JobStatus.COMPLETED
+
+                results[cluster_id] = {
+                    "status": status,
+                    "exit_code": job.get("ExitCode"),
+                    "exit_by_signal": bool(job.get("ExitBySignal", False)),
+                    "exit_signal": job.get("ExitSignal"),
+                    "hold_reason": job.get("HoldReason"),
+                    "held_since": None,
+                }
+
+            self.logger.debug(
+                f"Batch history query found {len(results)} of {len(cluster_ids)} jobs"
+            )
+
+            # Log warnings for jobs not found anywhere
+            not_found = set(cluster_ids) - set(results.keys())
+            for cid in not_found:
+                self.logger.warning(
+                    f"Job {cid} not found in schedd or recent history. "
+                    "This may indicate the job was removed or the log file was lost."
+                )
+
+        except Exception as e:
+            self.logger.warning(f"Error in batch history query: {e}")
+
+        return results
+
+    def _try_read_job_log(self, cluster_id: int) -> Optional[dict]:
+        """
+        Attempt to read job status from the event log.
+
+        This is the preferred method for getting job status as it doesn't
+        require any schedd queries. If the log file is available and readable,
+        returns the job state. Otherwise returns None.
+
+        Args:
+            cluster_id: The HTCondor ClusterId for the job
+
+        Returns:
+            A dict with job state info, or None if log couldn't be read
+        """
+        job_state = self._read_job_events(cluster_id)
+
+        if job_state is not None:
+            # Log file worked - reset missing counter
+            if cluster_id in self._log_missing_counts:
+                del self._log_missing_counts[cluster_id]
+            return job_state
+
+        # Log file not available - track consecutive failures
+        self._log_missing_counts[cluster_id] = (
+            self._log_missing_counts.get(cluster_id, 0) + 1
+        )
+
+        return None
+
+    def _needs_fallback(self, cluster_id: int) -> bool:
+        """
+        Check if a job has exceeded the log missing threshold and needs fallback.
+
+        Args:
+            cluster_id: The HTCondor ClusterId for the job
+
+        Returns:
+            True if the job needs fallback queries, False otherwise
+        """
+        return (
+            self._log_missing_counts.get(cluster_id, 0) >= self._log_missing_threshold
+        )
+
     def _read_job_events(self, cluster_id: int) -> Optional[dict]:
         """
         Read all available events from a job's log file and determine its current state.
@@ -1259,158 +1506,201 @@ class Executor(RemoteExecutor):
 
         return current_state
 
+    def _process_job_state(
+        self, current_job: SubmittedJobInfo, job_state: dict
+    ) -> Optional[SubmittedJobInfo]:
+        """
+        Process a job's state and handle reporting/cleanup.
+
+        Args:
+            current_job: The SubmittedJobInfo for this job
+            job_state: The job state dict with status and other info
+
+        Returns:
+            The current_job if it should remain active, None if it's terminal
+        """
+        cluster_id = current_job.external_jobid
+        status = job_state["status"]
+
+        self.logger.debug(
+            f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+            f"{cluster_id} has status: {status.display_name}"
+        )
+
+        # Handle different states
+        if status in (
+            JobStatus.PENDING,
+            JobStatus.IDLE,
+            JobStatus.RUNNING,
+            JobStatus.TRANSFERRING,
+        ):
+            # Job is still active
+            return current_job
+
+        elif status == JobStatus.SUSPENDED:
+            self.logger.warning(
+                f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                f"{cluster_id} is suspended."
+            )
+            return current_job
+
+        elif status == JobStatus.COMPLETED:
+            exit_code = job_state.get("exit_code")
+            exit_by_signal = job_state.get("exit_by_signal", False)
+
+            if exit_by_signal:
+                signal = job_state.get("exit_signal", "unknown")
+                self.logger.debug(
+                    f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} terminated by signal {signal}"
+                )
+                self.report_job_error(
+                    current_job,
+                    msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} was terminated by signal {signal}.",
+                )
+            elif exit_code == 0:
+                self.logger.debug(
+                    f"Report Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} success"
+                )
+                self.logger.info(
+                    f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} was successful."
+                )
+                self.report_job_success(current_job)
+            else:
+                self.logger.debug(
+                    f"Report Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} error"
+                )
+                self.report_job_error(
+                    current_job,
+                    msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} completed but failed with ExitCode {exit_code}.",
+                )
+
+            # Clean up tracking for this job
+            self._cleanup_job_tracking(cluster_id)
+            return None
+
+        elif status == JobStatus.HELD:
+            hold_reason = job_state.get("hold_reason", "Unknown reason")
+            held_since = job_state.get("held_since")
+
+            # Check if hold timeout has been exceeded
+            if self._held_timeout == 0:
+                # Timeout of 0 means fail immediately
+                self.report_job_error(
+                    current_job,
+                    msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} is held: {hold_reason}",
+                )
+                self._cleanup_job_tracking(cluster_id)
+                return None
+            elif held_since is not None:
+                elapsed = time.time() - held_since
+                if elapsed >= self._held_timeout:
+                    # Timeout exceeded - treat as terminal failure
+                    timeout_hours = self._held_timeout / 3600
+                    self.report_job_error(
+                        current_job,
+                        msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                        f"{cluster_id} has been held for {elapsed / 3600:.1f} hours "
+                        f"(timeout: {timeout_hours:.1f} hours). Hold reason: {hold_reason}",
+                    )
+                    self._cleanup_job_tracking(cluster_id)
+                    return None
+                else:
+                    # Still within timeout - keep monitoring
+                    remaining = self._held_timeout - elapsed
+                    self.logger.info(
+                        f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                        f"{cluster_id} is held: {hold_reason}. "
+                        f"Will fail in {remaining / 60:.0f} minutes if not released."
+                    )
+                    return current_job
+            else:
+                # No held_since timestamp (shouldn't happen) - keep monitoring
+                self.logger.warning(
+                    f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} is held but missing timestamp: {hold_reason}"
+                )
+                return current_job
+
+        elif status == JobStatus.REMOVED:
+            self.report_job_error(
+                current_job,
+                msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                f"{cluster_id} was removed/aborted.",
+            )
+            # Clean up tracking for this job
+            self._cleanup_job_tracking(cluster_id)
+            return None
+
+        else:
+            # Unknown status - keep monitoring
+            self.logger.warning(
+                f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                f"{cluster_id} has unexpected status: {status}"
+            )
+            return current_job
+
     async def check_active_jobs(
         self, active_jobs: List[SubmittedJobInfo]
     ) -> Generator[SubmittedJobInfo, None, None]:
         """
         Check the status of active jobs by reading their HTCondor log files.
 
-        This implementation avoids expensive schedd queries by reading the local
-        job event log files, similar to how DAGMan and condor_watch_q operate.
-        This is the recommended approach for monitoring many concurrent jobs
-        without putting load on the schedd.
+        This implementation uses a two-pass approach to avoid blocking:
+
+        Pass 1 (fast, non-blocking):
+          - Read job event logs for all jobs (local file I/O, microseconds each)
+          - Process jobs with known states immediately
+          - Collect jobs needing fallback into a batch
+
+        Pass 2 (batched, single blocking call if needed):
+          - Query schedd once for all jobs needing fallback
+          - Query history once for jobs not found in schedd
+          - Process remaining jobs
+
+        This approach ensures that slow history queries for one job don't block
+        status checks for other jobs. The common case (log files available) is
+        very fast, and the fallback case batches queries efficiently.
 
         The method reads all new events from each job's log file and determines
         the current state. Terminal states (completed, removed) are cached
-        to avoid re-reading finished jobs. Held jobs are monitored with a timeout -
-        they remain active to allow for manual release, but will fail after the
-        configured timeout period.
+        to avoid re-reading finished jobs. Held jobs are monitored with a timeout.
         """
+        # Maps cluster_id -> SubmittedJobInfo for jobs needing fallback
+        jobs_needing_fallback: Dict[int, SubmittedJobInfo] = {}
+
+        # ========== PASS 1: Try log files for all jobs (fast) ==========
         for current_job in active_jobs:
             cluster_id = current_job.external_jobid
 
             try:
-                job_state = self._read_job_events(cluster_id)
+                # Try to read from the job event log (fast, non-blocking)
+                job_state = self._try_read_job_log(cluster_id)
 
-                if job_state is None:
-                    # Couldn't read log yet, assume job is still pending
-                    self.logger.debug(
-                        f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                        f"{cluster_id}: log not available yet, assuming still active"
-                    )
-                    yield current_job
-                    continue
-
-                status = job_state["status"]
-                self.logger.debug(
-                    f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                    f"{cluster_id} has status: {status.display_name}"
-                )
-
-                # Handle different states
-                if status in (
-                    JobStatus.PENDING,
-                    JobStatus.IDLE,
-                    JobStatus.RUNNING,
-                    JobStatus.TRANSFERRING,
-                ):
-                    # Job is still active
-                    yield current_job
-
-                elif status == JobStatus.SUSPENDED:
-                    self.logger.warning(
-                        f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                        f"{cluster_id} is suspended."
-                    )
-                    yield current_job
-
-                elif status == JobStatus.COMPLETED:
-                    exit_code = job_state.get("exit_code")
-                    exit_by_signal = job_state.get("exit_by_signal", False)
-
-                    if exit_by_signal:
-                        signal = job_state.get("exit_signal", "unknown")
-                        self.logger.debug(
-                            f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} terminated by signal {signal}"
-                        )
-                        self.report_job_error(
-                            current_job,
-                            msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} was terminated by signal {signal}.",
-                        )
-                    elif exit_code == 0:
-                        self.logger.debug(
-                            f"Report Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} success"
-                        )
-                        self.logger.info(
-                            f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} was successful."
-                        )
-                        self.report_job_success(current_job)
+                if job_state is not None:
+                    # Got state from log - process it immediately
+                    result = self._process_job_state(current_job, job_state)
+                    if result is not None:
+                        yield result
+                else:
+                    # Log not available - check if we need fallback
+                    if self._needs_fallback(cluster_id):
+                        # Collect for batch fallback query
+                        jobs_needing_fallback[cluster_id] = current_job
                     else:
+                        # Still waiting for log to appear - assume active
                         self.logger.debug(
-                            f"Report Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} error"
-                        )
-                        self.report_job_error(
-                            current_job,
-                            msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} completed but failed with ExitCode {exit_code}.",
-                        )
-
-                    # Clean up tracking for this job
-                    self._cleanup_job_tracking(cluster_id)
-
-                elif status == JobStatus.HELD:
-                    hold_reason = job_state.get("hold_reason", "Unknown reason")
-                    held_since = job_state.get("held_since")
-
-                    # Check if hold timeout has been exceeded
-                    if self._held_timeout == 0:
-                        # Timeout of 0 means fail immediately
-                        self.report_job_error(
-                            current_job,
-                            msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} is held: {hold_reason}",
-                        )
-                        self._cleanup_job_tracking(cluster_id)
-                    elif held_since is not None:
-                        elapsed = time.time() - held_since
-                        if elapsed >= self._held_timeout:
-                            # Timeout exceeded - treat as terminal failure
-                            timeout_hours = self._held_timeout / 3600
-                            self.report_job_error(
-                                current_job,
-                                msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                                f"{cluster_id} has been held for {elapsed / 3600:.1f} hours "
-                                f"(timeout: {timeout_hours:.1f} hours). Hold reason: {hold_reason}",
-                            )
-                            self._cleanup_job_tracking(cluster_id)
-                        else:
-                            # Still within timeout - keep monitoring
-                            remaining = self._held_timeout - elapsed
-                            self.logger.info(
-                                f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                                f"{cluster_id} is held: {hold_reason}. "
-                                f"Will fail in {remaining / 60:.0f} minutes if not released."
-                            )
-                            yield current_job
-                    else:
-                        # No held_since timestamp (shouldn't happen) - keep monitoring
-                        self.logger.warning(
-                            f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                            f"{cluster_id} is held but missing timestamp: {hold_reason}"
+                            f"Log file for cluster {cluster_id} not yet available "
+                            f"(attempt {self._log_missing_counts.get(cluster_id, 0)}/"
+                            f"{self._log_missing_threshold})"
                         )
                         yield current_job
-
-                elif status == JobStatus.REMOVED:
-                    self.report_job_error(
-                        current_job,
-                        msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                        f"{cluster_id} was removed/aborted.",
-                    )
-                    # Clean up tracking for this job
-                    self._cleanup_job_tracking(cluster_id)
-
-                else:
-                    # Unknown status - keep monitoring
-                    self.logger.warning(
-                        f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                        f"{cluster_id} has unexpected status: {status}"
-                    )
-                    yield current_job
 
             except Exception as e:
                 self.logger.warning(
@@ -1419,6 +1709,60 @@ class Executor(RemoteExecutor):
                 )
                 # Assume job is still running and retry next time
                 yield current_job
+
+        # ========== PASS 2: Batch fallback for remaining jobs ==========
+        if not jobs_needing_fallback:
+            return
+
+        self.logger.info(
+            f"Using batch fallback for {len(jobs_needing_fallback)} jobs "
+            f"with unavailable log files: {list(jobs_needing_fallback.keys())}"
+        )
+
+        # Step 2a: Batch query schedd for all jobs needing fallback
+        cluster_ids_to_query = list(jobs_needing_fallback.keys())
+        schedd_results = self._batch_query_schedd(cluster_ids_to_query)
+
+        # Process jobs found in schedd
+        jobs_not_in_schedd: Dict[int, SubmittedJobInfo] = {}
+        for cluster_id, current_job in jobs_needing_fallback.items():
+            if cluster_id in schedd_results:
+                job_state = schedd_results[cluster_id]
+                # Update cached state
+                self._job_current_states[cluster_id] = job_state
+                result = self._process_job_state(current_job, job_state)
+                if result is not None:
+                    yield result
+            else:
+                # Not in schedd - need to check history
+                jobs_not_in_schedd[cluster_id] = current_job
+
+        # Step 2b: Batch query history for jobs not in schedd
+        if not jobs_not_in_schedd:
+            return
+
+        cluster_ids_for_history = list(jobs_not_in_schedd.keys())
+        history_results = self._batch_query_history(cluster_ids_for_history)
+
+        # Process jobs found in history
+        for cluster_id, current_job in jobs_not_in_schedd.items():
+            if cluster_id in history_results:
+                job_state = history_results[cluster_id]
+                # Update cached state
+                self._job_current_states[cluster_id] = job_state
+                result = self._process_job_state(current_job, job_state)
+                if result is not None:
+                    yield result
+            else:
+                # Job not found anywhere - report as lost
+                self.report_job_error(
+                    current_job,
+                    msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} could not be tracked. Log file missing and "
+                    "job not found in schedd or history. The job may have been "
+                    "lost or removed externally.",
+                )
+                self._cleanup_job_tracking(cluster_id)
 
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
         # Cancel all active jobs.
