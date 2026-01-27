@@ -546,6 +546,13 @@ class Executor(RemoteExecutor):
             f"Transfer input files: {transfer_input_files}\n"
             f"Transfer output files: {transfer_output_files}"
         )
+
+        # Warning for the absolute paths getting flatten after being sent to HTCondor
+        if job.resources.get("preserve_relative_paths", True):
+            abs_paths = [p for p in transfer_input_files if isabs(p)]
+            if abs_paths:
+                self.logger.warning(f"Absolute paths will be flattened: {abs_paths}")
+
         return transfer_input_files, transfer_output_files
 
     def _prepare_config_files_for_transfer(
