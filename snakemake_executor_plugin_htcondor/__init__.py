@@ -1026,6 +1026,7 @@ class Executor(RemoteExecutor):
                     self.logger.warning(f"Failed to retrieve HTCondor job status: {e}")
                     # Assuming the job is still running and retry next time
                     yield current_job
+                    continue
                 self.logger.debug(
                     f"Job {current_job.job.jobid} with HTCondor Cluster ID "
                     f"{current_job.external_jobid} has status: {job_status}"
