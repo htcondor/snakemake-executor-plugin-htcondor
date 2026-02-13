@@ -8,7 +8,7 @@ and interprets job states, replacing the previous schedd query-based approach.
 import pytest
 import time
 from unittest.mock import Mock
-from snakemake_executor_plugin_htcondor import Executor, JobStatus
+from snakemake_executor_plugin_htcondor import Executor, JobStatus, JobState
 
 
 def make_event(event_type, **kwargs):
@@ -81,17 +81,17 @@ class TestJobEventLogStateTracking:
 
         # First read
         result1 = executor._read_job_events(12345)
-        assert result1["status"] == JobStatus.RUNNING
+        assert result1.status == JobStatus.RUNNING
 
         # Second read (no new events) - should return cached state
         result2 = executor._read_job_events(12345)
-        assert result2["status"] == JobStatus.RUNNING
+        assert result2.status == JobStatus.RUNNING
 
     def test_cleanup_removes_tracking_data(self):
         """Verify that job tracking data is cleaned up after job completes."""
         executor = Mock(spec=Executor)
         executor._job_event_logs = {12345: Mock()}
-        executor._job_current_states = {12345: {"status": JobStatus.COMPLETED}}
+        executor._job_current_states = {12345: JobState(status=JobStatus.COMPLETED)}
         executor._log_missing_counts = {12345: 2}
         executor.logger = Mock()
 
@@ -146,7 +146,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.IDLE
+        assert result.status == JobStatus.IDLE
 
     def test_execute_event_sets_running(self, mock_executor):
         """EXECUTE event (type 1) should set status to RUNNING."""
@@ -167,7 +167,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.RUNNING
+        assert result.status == JobStatus.RUNNING
 
     def test_terminated_event_sets_completed(self, mock_executor):
         """JOB_TERMINATED event (type 5) should set status to COMPLETED."""
@@ -193,9 +193,9 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.COMPLETED
-        assert result["exit_code"] == 0
-        assert result["exit_by_signal"] is False
+        assert result.status == JobStatus.COMPLETED
+        assert result.exit_code == 0
+        assert result.exit_by_signal is False
 
     def test_terminated_with_nonzero_exit(self, mock_executor):
         """JOB_TERMINATED with non-zero exit code should be captured."""
@@ -220,8 +220,8 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.COMPLETED
-        assert result["exit_code"] == 42
+        assert result.status == JobStatus.COMPLETED
+        assert result.exit_code == 42
 
     def test_held_event_sets_held_with_timestamp(self, mock_executor):
         """JOB_HELD event (type 12) should set status to HELD and record timestamp."""
@@ -246,11 +246,11 @@ class TestJobEventTypes:
         after_time = time.time()
 
         assert result is not None
-        assert result["status"] == JobStatus.HELD
-        assert result["hold_reason"] == "Job exceeded memory limit"
+        assert result.status == JobStatus.HELD
+        assert result.hold_reason == "Job exceeded memory limit"
         # Verify held_since is set to approximately the current time
-        assert result["held_since"] is not None
-        assert before_time <= result["held_since"] <= after_time
+        assert result.held_since is not None
+        assert before_time <= result.held_since <= after_time
 
     def test_aborted_event_sets_removed(self, mock_executor):
         """JOB_ABORTED event (type 9) should set status to REMOVED."""
@@ -271,7 +271,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.REMOVED
+        assert result.status == JobStatus.REMOVED
 
     def test_evicted_event_sets_idle(self, mock_executor):
         """JOB_EVICTED event should set status back to IDLE."""
@@ -293,7 +293,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.IDLE
+        assert result.status == JobStatus.IDLE
 
     def test_suspended_event_sets_suspended(self, mock_executor):
         """JOB_SUSPENDED event should set status to SUSPENDED."""
@@ -315,7 +315,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.SUSPENDED
+        assert result.status == JobStatus.SUSPENDED
 
     def test_unsuspended_event_sets_running(self, mock_executor):
         """JOB_UNSUSPENDED event should set status back to RUNNING."""
@@ -338,7 +338,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.RUNNING
+        assert result.status == JobStatus.RUNNING
 
     def test_released_event_clears_held_state(self, mock_executor):
         """JOB_RELEASED event should set status back to IDLE and clear held_since."""
@@ -360,10 +360,10 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.IDLE
+        assert result.status == JobStatus.IDLE
         # hold_reason and held_since should be cleared after release
-        assert result["hold_reason"] is None
-        assert result["held_since"] is None
+        assert result.hold_reason is None
+        assert result.held_since is None
 
     def test_file_transfer_event_sets_transferring(self, mock_executor):
         """FILE_TRANSFER event should set status to TRANSFERRING when not running."""
@@ -384,7 +384,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.TRANSFERRING
+        assert result.status == JobStatus.TRANSFERRING
 
     def test_file_transfer_does_not_override_running(self, mock_executor):
         """FILE_TRANSFER event should not override RUNNING status."""
@@ -407,7 +407,7 @@ class TestJobEventTypes:
 
         assert result is not None
         # Should still be RUNNING, not TRANSFERRING
-        assert result["status"] == JobStatus.RUNNING
+        assert result.status == JobStatus.RUNNING
 
     def test_image_size_event_does_not_change_status(self, mock_executor):
         """IMAGE_SIZE event should not change the job status."""
@@ -429,7 +429,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.RUNNING  # Still running
+        assert result.status == JobStatus.RUNNING  # Still running
 
     def test_shadow_exception_sets_idle(self, mock_executor):
         """SHADOW_EXCEPTION event should set status to IDLE (for reschedule)."""
@@ -451,7 +451,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.IDLE
+        assert result.status == JobStatus.IDLE
 
     def test_reconnect_failed_sets_idle(self, mock_executor):
         """JOB_RECONNECT_FAILED event should set status to IDLE."""
@@ -473,7 +473,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.IDLE
+        assert result.status == JobStatus.IDLE
 
     def test_reconnected_sets_running(self, mock_executor):
         """JOB_RECONNECTED event should set status to RUNNING."""
@@ -496,7 +496,7 @@ class TestJobEventTypes:
         result = mock_executor._read_job_events(12345)
 
         assert result is not None
-        assert result["status"] == JobStatus.RUNNING
+        assert result.status == JobStatus.RUNNING
 
 
 class TestStatePersistenceAcrossReads:
@@ -550,12 +550,12 @@ class TestStatePersistenceAcrossReads:
 
         # First read
         result1 = executor._read_job_events(12345)
-        assert result1["status"] == JobStatus.RUNNING
+        assert result1.status == JobStatus.RUNNING
 
         # Second read (no new events)
         result2 = executor._read_job_events(12345)
         assert (
-            result2["status"] == JobStatus.RUNNING
+            result2.status == JobStatus.RUNNING
         )  # Should still be RUNNING, not PENDING
 
     def test_terminal_state_cached_and_returned(self):
@@ -578,20 +578,15 @@ class TestStatePersistenceAcrossReads:
         )
 
         # Pre-populate with a terminal state
-        executor._job_current_states[12345] = {
-            "status": JobStatus.COMPLETED,
-            "exit_code": 0,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": None,
-            "held_since": None,
-        }
+        executor._job_current_states[12345] = JobState(
+            status=JobStatus.COMPLETED, exit_code=0
+        )
 
         # Should return cached state without reading log
         result = executor._read_job_events(12345)
 
-        assert result["status"] == JobStatus.COMPLETED
-        assert result["exit_code"] == 0
+        assert result.status == JobStatus.COMPLETED
+        assert result.exit_code == 0
 
     def test_held_state_is_not_terminal(self):
         """
@@ -615,14 +610,11 @@ class TestStatePersistenceAcrossReads:
         )
 
         # Pre-populate with a held state
-        executor._job_current_states[12345] = {
-            "status": JobStatus.HELD,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": "Test reason",
-            "held_since": time.time() - 60,  # Held for 1 minute
-        }
+        executor._job_current_states[12345] = JobState(
+            status=JobStatus.HELD,
+            hold_reason="Test reason",
+            held_since=time.time() - 60,  # Held for 1 minute
+        )
 
         # Create a mock event log that returns a RELEASED event
         mock_event_log = Mock()
@@ -639,9 +631,9 @@ class TestStatePersistenceAcrossReads:
         result = executor._read_job_events(12345)
 
         # Job should now be IDLE, not still HELD
-        assert result["status"] == JobStatus.IDLE
-        assert result["hold_reason"] is None
-        assert result["held_since"] is None
+        assert result.status == JobStatus.IDLE
+        assert result.hold_reason is None
+        assert result.held_since is None
 
 
 class TestLogFileInitialization:
@@ -686,7 +678,7 @@ class TestErrorHandling:
     """Tests for error handling in event reading."""
 
     def test_error_returns_last_known_state(self):
-        """Test that errors during reading return the last known state."""
+        """Test that errors during reading return None to trigger fallback."""
         executor = Mock(spec=Executor)
         executor.logger = Mock()
         executor._job_event_logs = {}
@@ -702,23 +694,20 @@ class TestErrorHandling:
         )
 
         # Set up initial state
-        executor._job_current_states[12345] = {
-            "status": JobStatus.RUNNING,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": None,
-            "held_since": None,
-        }
+        executor._job_current_states[12345] = JobState(status=JobStatus.RUNNING)
 
         # Create a mock that raises an error
         mock_event_log = Mock()
         mock_event_log.events = Mock(side_effect=Exception("Read error"))
         executor._job_event_logs[12345] = mock_event_log
 
-        # Should return last known state despite error
+        # Should return None so fallback mechanism can kick in
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.RUNNING
+        assert result is None
+
+        # But the last known state should still be preserved in _job_current_states
+        assert 12345 in executor._job_current_states
+        assert executor._job_current_states[12345].status == JobStatus.RUNNING
 
         # Should have logged a warning
         assert executor.logger.warning.called
@@ -755,14 +744,11 @@ class TestHeldJobTimeout:
         executor = mock_executor_with_timeout
 
         # Job held 30 minutes ago (within 1 hour timeout)
-        executor._job_current_states[12345] = {
-            "status": JobStatus.HELD,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": "Memory limit exceeded",
-            "held_since": time.time() - 1800,  # 30 minutes ago
-        }
+        executor._job_current_states[12345] = JobState(
+            status=JobStatus.HELD,
+            hold_reason="Memory limit exceeded",
+            held_since=time.time() - 1800,  # 30 minutes ago
+        )
 
         # Create mock event log that returns no new events
         mock_event_log = Mock()
@@ -773,9 +759,9 @@ class TestHeldJobTimeout:
         result = executor._read_job_events(12345)
 
         # Job should still be held
-        assert result["status"] == JobStatus.HELD
+        assert result.status == JobStatus.HELD
         # held_since should be preserved
-        assert result["held_since"] is not None
+        assert result.held_since is not None
 
     def test_held_job_past_timeout_can_be_identified(self, mock_executor_with_timeout):
         """Held job past timeout can be identified by check_active_jobs."""
@@ -783,21 +769,18 @@ class TestHeldJobTimeout:
 
         # Job held 2 hours ago (past 1 hour timeout)
         held_since = time.time() - 7200  # 2 hours ago
-        executor._job_current_states[12345] = {
-            "status": JobStatus.HELD,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": "Memory limit exceeded",
-            "held_since": held_since,
-        }
+        executor._job_current_states[12345] = JobState(
+            status=JobStatus.HELD,
+            hold_reason="Memory limit exceeded",
+            held_since=held_since,
+        )
 
         # The state should reflect that timeout has been exceeded
         state = executor._job_current_states[12345]
-        elapsed = time.time() - state["held_since"]
+        elapsed = time.time() - state.held_since
 
         assert elapsed > executor._held_timeout
-        assert state["status"] == JobStatus.HELD
+        assert state.status == JobStatus.HELD
 
     def test_zero_timeout_means_immediate_failure(self):
         """Timeout of 0 should mean held jobs fail immediately."""
@@ -863,8 +846,8 @@ class TestJobEventLogReadAndCleanup:
 
         # Read events and verify completion
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.COMPLETED
-        assert result["exit_code"] == 0
+        assert result.status == JobStatus.COMPLETED
+        assert result.exit_code == 0
 
         # Clean up and verify tracking data is removed
         executor._cleanup_job_tracking(12345)
@@ -892,7 +875,7 @@ class TestJobEventLogReadAndCleanup:
 
         # Read events
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.RUNNING
+        assert result.status == JobStatus.RUNNING
 
         # Tracking data should still exist
         assert 12345 in executor._job_current_states
@@ -920,17 +903,17 @@ class TestJobEventLogReadAndCleanup:
 
         # Read events
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.HELD
-        assert result["hold_reason"] == "Memory limit exceeded"
-        assert result["held_since"] is not None
+        assert result.status == JobStatus.HELD
+        assert result.hold_reason == "Memory limit exceeded"
+        assert result.held_since is not None
 
 
-class TestProcessJobState:
-    """Tests for _process_job_state method and job reporting behavior."""
+class TestReportAndResolveJobState:
+    """Tests for _report_and_resolve_job_state method and job reporting behavior."""
 
     @pytest.fixture
     def mock_executor_for_processing(self):
-        """Create a mock executor with _process_job_state bound."""
+        """Create a mock executor with _report_and_resolve_job_state bound."""
         executor = Mock(spec=Executor)
         executor.logger = Mock()
         executor._job_event_logs = {}
@@ -940,8 +923,8 @@ class TestProcessJobState:
         executor._held_timeout = 14400  # 4 hour default
 
         # Bind methods needed for processing
-        executor._process_job_state = Executor._process_job_state.__get__(
-            executor, Executor
+        executor._report_and_resolve_job_state = (
+            Executor._report_and_resolve_job_state.__get__(executor, Executor)
         )
         executor._cleanup_job_tracking = Executor._cleanup_job_tracking.__get__(
             executor, Executor
@@ -968,16 +951,9 @@ class TestProcessJobState:
         """Verify that completed jobs with exit code 0 call report_job_success."""
         executor = mock_executor_for_processing
 
-        job_state = {
-            "status": JobStatus.COMPLETED,
-            "exit_code": 0,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": None,
-            "held_since": None,
-        }
+        job_state = JobState(status=JobStatus.COMPLETED, exit_code=0)
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         # Should not yield (returns None for terminal states)
         assert result is None
@@ -991,16 +967,9 @@ class TestProcessJobState:
         """Verify that completed jobs with nonzero exit code call report_job_error."""
         executor = mock_executor_for_processing
 
-        job_state = {
-            "status": JobStatus.COMPLETED,
-            "exit_code": 1,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": None,
-            "held_since": None,
-        }
+        job_state = JobState(status=JobStatus.COMPLETED, exit_code=1)
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         assert result is None
         executor.report_job_error.assert_called_once()
@@ -1015,16 +984,11 @@ class TestProcessJobState:
         """Verify that jobs terminated by signal call report_job_error."""
         executor = mock_executor_for_processing
 
-        job_state = {
-            "status": JobStatus.COMPLETED,
-            "exit_code": None,
-            "exit_by_signal": True,
-            "exit_signal": 9,
-            "hold_reason": None,
-            "held_since": None,
-        }
+        job_state = JobState(
+            status=JobStatus.COMPLETED, exit_by_signal=True, exit_signal=9
+        )
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         assert result is None
         executor.report_job_error.assert_called_once()
@@ -1039,16 +1003,9 @@ class TestProcessJobState:
         """Verify that removed/aborted jobs call report_job_error."""
         executor = mock_executor_for_processing
 
-        job_state = {
-            "status": JobStatus.REMOVED,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": None,
-            "held_since": None,
-        }
+        job_state = JobState(status=JobStatus.REMOVED)
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         assert result is None
         executor.report_job_error.assert_called_once()
@@ -1063,16 +1020,9 @@ class TestProcessJobState:
         """Verify that running jobs yield the job and don't call report methods."""
         executor = mock_executor_for_processing
 
-        job_state = {
-            "status": JobStatus.RUNNING,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": None,
-            "held_since": None,
-        }
+        job_state = JobState(status=JobStatus.RUNNING)
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         # Should yield the job (return it)
         assert result is mock_job_info
@@ -1087,16 +1037,13 @@ class TestProcessJobState:
         executor = mock_executor_for_processing
         executor._held_timeout = 3600  # 1 hour
 
-        job_state = {
-            "status": JobStatus.HELD,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": "Memory limit exceeded",
-            "held_since": time.time() - 7200,  # 2 hours ago
-        }
+        job_state = JobState(
+            status=JobStatus.HELD,
+            hold_reason="Memory limit exceeded",
+            held_since=time.time() - 7200,  # 2 hours ago
+        )
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         assert result is None
         executor.report_job_error.assert_called_once()
@@ -1112,16 +1059,13 @@ class TestProcessJobState:
         executor = mock_executor_for_processing
         executor._held_timeout = 7200  # 2 hours
 
-        job_state = {
-            "status": JobStatus.HELD,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": "Memory limit exceeded",
-            "held_since": time.time() - 3600,  # 1 hour ago (within 2 hour timeout)
-        }
+        job_state = JobState(
+            status=JobStatus.HELD,
+            hold_reason="Memory limit exceeded",
+            held_since=time.time() - 3600,  # 1 hour ago (within 2 hour timeout)
+        )
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         # Should yield the job (still active)
         assert result is mock_job_info
@@ -1135,16 +1079,13 @@ class TestProcessJobState:
         executor = mock_executor_for_processing
         executor._held_timeout = 0  # Fail immediately
 
-        job_state = {
-            "status": JobStatus.HELD,
-            "exit_code": None,
-            "exit_by_signal": False,
-            "exit_signal": None,
-            "hold_reason": "Memory limit exceeded",
-            "held_since": time.time(),
-        }
+        job_state = JobState(
+            status=JobStatus.HELD,
+            hold_reason="Memory limit exceeded",
+            held_since=time.time(),
+        )
 
-        result = executor._process_job_state(mock_job_info, job_state)
+        result = executor._report_and_resolve_job_state(mock_job_info, job_state)
 
         assert result is None
         executor.report_job_error.assert_called_once()
@@ -1205,8 +1146,8 @@ class TestJobLifecycleScenarios:
         executor._job_event_logs[12345] = mock_event_log
 
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.COMPLETED
-        assert result["exit_code"] == 0
+        assert result.status == JobStatus.COMPLETED
+        assert result.exit_code == 0
 
     def test_hold_and_release(self, mock_executor):
         """
@@ -1239,8 +1180,8 @@ class TestJobLifecycleScenarios:
         executor._job_event_logs[12345] = mock_event_log
 
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.COMPLETED
-        assert result["hold_reason"] is None  # Should be cleared after release
+        assert result.status == JobStatus.COMPLETED
+        assert result.hold_reason is None  # Should be cleared after release
 
     def test_shadow_exception_and_reschedule(self, mock_executor):
         """
@@ -1272,7 +1213,7 @@ class TestJobLifecycleScenarios:
         executor._job_event_logs[12345] = mock_event_log
 
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.COMPLETED
+        assert result.status == JobStatus.COMPLETED
 
     def test_job_killed_by_signal(self, mock_executor):
         """
@@ -1303,9 +1244,9 @@ class TestJobLifecycleScenarios:
         executor._job_event_logs[12345] = mock_event_log
 
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.COMPLETED
-        assert result["exit_by_signal"] is True
-        assert result["exit_signal"] == 9
+        assert result.status == JobStatus.COMPLETED
+        assert result.exit_by_signal is True
+        assert result.exit_signal == 9
 
     def test_job_removed_by_user(self, mock_executor):
         """
@@ -1331,7 +1272,7 @@ class TestJobLifecycleScenarios:
         executor._job_event_logs[12345] = mock_event_log
 
         result = executor._read_job_events(12345)
-        assert result["status"] == JobStatus.REMOVED
+        assert result.status == JobStatus.REMOVED
 
 
 class TestJobStatusEnum:
@@ -1481,7 +1422,7 @@ class TestScheddFallback:
         # Read should succeed and reset counter
         result = executor._try_read_job_log(12345)
 
-        assert result["status"] == JobStatus.RUNNING
+        assert result.status == JobStatus.RUNNING
         assert 12345 not in executor._log_missing_counts
 
     def test_batch_query_returns_dict_per_job(self, mock_executor_with_fallback):

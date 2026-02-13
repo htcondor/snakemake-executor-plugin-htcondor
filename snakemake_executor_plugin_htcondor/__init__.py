@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Generator, Optional, Dict
+from typing import List, AsyncGenerator, Optional, Dict
 import time
 from snakemake_interface_executor_plugins.executors.base import SubmittedJobInfo
 from snakemake_interface_executor_plugins.executors.remote import RemoteExecutor
@@ -47,8 +47,20 @@ class JobStatus(Enum):
         return self in (JobStatus.COMPLETED, JobStatus.REMOVED)
 
 
-# Default timeout for held jobs before treating them as failed (4 hours in seconds)
-DEFAULT_HELD_TIMEOUT_SECONDS = 4 * 60 * 60
+@dataclass
+class JobState:
+    """Represents the current state of an HTCondor job.
+
+    This dataclass provides type-safe access to job state fields,
+    replacing raw dictionaries to prevent silent bugs from key typos.
+    """
+
+    status: JobStatus = JobStatus.PENDING
+    exit_code: Optional[int] = None
+    exit_by_signal: bool = False
+    exit_signal: Optional[int] = None
+    hold_reason: Optional[str] = None
+    held_since: Optional[float] = None
 
 
 def is_shared_fs(in_path, shared_prefixes) -> bool:
@@ -89,11 +101,12 @@ class ExecutorSettings(ExecutorSettingsBase):
         },
     )
     held_timeout: Optional[int] = field(
-        default=None,
+        default=4 * 60 * 60,
         metadata={
-            "help": "Timeout in seconds for held jobs before treating them as failed. "
-            "This allows time for manual intervention (e.g., condor_release) before "
-            "the workflow fails. Default is 4 hours (14400 seconds). Set to 0 to "
+            "help": "Timeout in seconds for held jobs before the Executor will treat "
+            "them as failed. This allows time for manual intervention "
+            "(e.g., condor_release) before the workflow fails. "
+            "Default is 4 hours (14400 seconds). Set to 0 to "
             "fail immediately when a job is held.",
             "required": False,
         },
@@ -163,21 +176,33 @@ class Executor(RemoteExecutor):
         self._job_event_logs: Dict[int, JobEventLog] = {}
 
         # Dictionary to track the latest known state for each job.
-        # Key: external_jobid (ClusterId), Value: dict with current state info
+        # Key: external_jobid (ClusterId), Value: JobState dataclass
         # This is essential because JobEventLog readers maintain their position -
         # once all events are read, subsequent reads return nothing. We track
         # the last known state so we can return it when there are no new events.
-        self._job_current_states: Dict[int, dict] = {}
+        self._job_current_states: Dict[int, JobState] = {}
 
         # Held job timeout - allows time for manual intervention before failing
-        held_timeout_setting = self.workflow.executor_settings.held_timeout
-        self._held_timeout = (
-            held_timeout_setting
-            if held_timeout_setting is not None
-            else DEFAULT_HELD_TIMEOUT_SECONDS
-        )
+        self._held_timeout = self.workflow.executor_settings.held_timeout
+        self._validate_held_timeout()
 
-        # Validate held_timeout - negative values would cause immediate timeout
+        # Track when the workflow started for efficient condor_history queries.
+        # We use this with the -since option to avoid scanning the entire history.
+        self._workflow_start_time = int(time.time())
+
+        # Track jobs that have missing log files and need schedd/history fallback.
+        # Key: cluster_id, Value: number of consecutive log-missing checks
+        self._log_missing_counts: Dict[int, int] = {}
+
+        # Number of consecutive missing log checks before using fallback
+        self._log_missing_threshold = 3
+
+    def _validate_held_timeout(self):
+        """Validate the held job timeout configuration.
+
+        Raises:
+            WorkflowError: If the held_timeout value is negative.
+        """
         if self._held_timeout < 0:
             raise WorkflowError(
                 f"Invalid held_timeout value {self._held_timeout}: must be >= 0. "
@@ -190,17 +215,6 @@ class Executor(RemoteExecutor):
                 f"Held job timeout set to {self._held_timeout} seconds "
                 f"({self._held_timeout / 3600:.1f} hours)"
             )
-
-        # Track when the workflow started for efficient condor_history queries.
-        # We use this with the -since option to avoid scanning the entire history.
-        self._workflow_start_time = int(time.time())
-
-        # Track jobs that have missing log files and need schedd/history fallback.
-        # Key: cluster_id, Value: number of consecutive log-missing checks
-        self._log_missing_counts: Dict[int, int] = {}
-
-        # Number of consecutive missing log checks before using fallback
-        self._log_missing_threshold = 3
 
     def _validate_shared_fs_configuration(self):
         """Validate and warn about potentially confusing shared FS configuration."""
@@ -538,7 +552,9 @@ class Executor(RemoteExecutor):
         if job.output:
             top_most_output_directories = {path.split(sep)[0] for path in job.output}
             for path in top_most_output_directories:
-                self._add_file_if_transferable(path, transfer_output_files)
+                self._add_file_if_transferable(
+                    path, transfer_output_files, validate_exists=False
+                )
 
         # Process script and notebook files from all rules in the job
         # For grouped jobs, we need to iterate over job.jobs to access each individual
@@ -617,6 +633,7 @@ class Executor(RemoteExecutor):
                     transfer_output_files,
                     expand_wildcards=expand_wildcards,
                     job=job,
+                    validate_exists=False,
                 )
 
         # Explicitly handle job_wrapper if specified
@@ -1141,6 +1158,7 @@ class Executor(RemoteExecutor):
         """
         Convert HTCondor's numeric JobStatus to our JobStatus enum.
 
+        https://htcondor.readthedocs.io/en/latest/codes-other-values/job-status-codes.html#job-status-codes
         HTCondor JobStatus values:
         1 = Idle, 2 = Running, 3 = Removed, 4 = Completed, 5 = Held,
         6 = Transferring Output, 7 = Suspended
@@ -1162,7 +1180,7 @@ class Executor(RemoteExecutor):
         }
         return status_map.get(job_status, JobStatus.PENDING)
 
-    def _batch_query_schedd(self, cluster_ids: List[int]) -> Dict[int, dict]:
+    def _batch_query_schedd(self, cluster_ids: List[int]) -> Dict[int, JobState]:
         """
         Query the schedd for multiple jobs' current status in a single call.
 
@@ -1195,6 +1213,7 @@ class Executor(RemoteExecutor):
                 "ExitCode",
                 "ExitBySignal",
                 "ExitSignal",
+                "EnteredCurrentStatus",
             ]
 
             self.logger.debug(
@@ -1211,14 +1230,22 @@ class Executor(RemoteExecutor):
                 htcondor_status = job.get("JobStatus", 1)
                 status = self._htcondor_status_to_job_status(htcondor_status)
 
-                results[cluster_id] = {
-                    "status": status,
-                    "exit_code": job.get("ExitCode"),
-                    "exit_by_signal": bool(job.get("ExitBySignal", False)),
-                    "exit_signal": job.get("ExitSignal"),
-                    "hold_reason": job.get("HoldReason"),
-                    "held_since": time.time() if status == JobStatus.HELD else None,
-                }
+                # Use EnteredCurrentStatus for accurate held_since timestamp.
+                # This is the actual time the job entered the held state,
+                # not the time we queried it.
+                held_since = None
+                if status == JobStatus.HELD:
+                    entered = job.get("EnteredCurrentStatus")
+                    held_since = float(entered) if entered is not None else time.time()
+
+                results[cluster_id] = JobState(
+                    status=status,
+                    exit_code=job.get("ExitCode"),
+                    exit_by_signal=bool(job.get("ExitBySignal", False)),
+                    exit_signal=job.get("ExitSignal"),
+                    hold_reason=job.get("HoldReason"),
+                    held_since=held_since,
+                )
 
             self.logger.debug(
                 f"Batch schedd query found {len(results)} of {len(cluster_ids)} jobs"
@@ -1229,7 +1256,7 @@ class Executor(RemoteExecutor):
 
         return results
 
-    def _batch_query_history(self, cluster_ids: List[int]) -> Dict[int, dict]:
+    def _batch_query_history(self, cluster_ids: List[int]) -> Dict[int, JobState]:
         """
         Query condor_history for multiple completed jobs in a single call.
 
@@ -1241,7 +1268,7 @@ class Executor(RemoteExecutor):
             cluster_ids: List of HTCondor ClusterIds to query
 
         Returns:
-            Dict mapping cluster_id to job state info for jobs found in history.
+            Dict mapping cluster_id to JobState for jobs found in history.
             Jobs not in history will not have entries in the result.
         """
         if not cluster_ids:
@@ -1287,18 +1314,14 @@ class Executor(RemoteExecutor):
                 htcondor_status = job.get("JobStatus", 4)  # Default to Completed
                 status = self._htcondor_status_to_job_status(htcondor_status)
 
-                # History entries are typically completed/removed jobs
-                if status not in (JobStatus.COMPLETED, JobStatus.REMOVED):
-                    status = JobStatus.COMPLETED
-
-                results[cluster_id] = {
-                    "status": status,
-                    "exit_code": job.get("ExitCode"),
-                    "exit_by_signal": bool(job.get("ExitBySignal", False)),
-                    "exit_signal": job.get("ExitSignal"),
-                    "hold_reason": job.get("HoldReason"),
-                    "held_since": None,
-                }
+                results[cluster_id] = JobState(
+                    status=status,
+                    exit_code=job.get("ExitCode"),
+                    exit_by_signal=bool(job.get("ExitBySignal", False)),
+                    exit_signal=job.get("ExitSignal"),
+                    hold_reason=job.get("HoldReason"),
+                    held_since=None,
+                )
 
             self.logger.debug(
                 f"Batch history query found {len(results)} of {len(cluster_ids)} jobs"
@@ -1317,7 +1340,7 @@ class Executor(RemoteExecutor):
 
         return results
 
-    def _try_read_job_log(self, cluster_id: int) -> Optional[dict]:
+    def _try_read_job_log(self, cluster_id: int) -> Optional[JobState]:
         """
         Attempt to read job status from the event log.
 
@@ -1329,7 +1352,7 @@ class Executor(RemoteExecutor):
             cluster_id: The HTCondor ClusterId for the job
 
         Returns:
-            A dict with job state info, or None if log couldn't be read
+            A JobState with job state info, or None if log couldn't be read
         """
         job_state = self._read_job_events(cluster_id)
 
@@ -1360,7 +1383,7 @@ class Executor(RemoteExecutor):
             self._log_missing_counts.get(cluster_id, 0) >= self._log_missing_threshold
         )
 
-    def _read_job_events(self, cluster_id: int) -> Optional[dict]:
+    def _read_job_events(self, cluster_id: int) -> Optional[JobState]:
         """
         Read all available events from a job's log file and determine its current state.
 
@@ -1376,14 +1399,7 @@ class Executor(RemoteExecutor):
             cluster_id: The HTCondor ClusterId for the job
 
         Returns:
-            A dict with job state info:
-            - 'status': A JobStatus enum value
-            - 'exit_code': Exit code if completed (may be None)
-            - 'exit_by_signal': Whether job exited by signal
-            - 'exit_signal': Signal number if exited by signal
-            - 'hold_reason': Reason string if held
-            - 'held_since': Timestamp when job entered held state (if held)
-            Or None if we couldn't read the log
+            A JobState with current job state info, or None if we couldn't read the log.
         """
         event_log = self._get_job_event_log(cluster_id)
         if event_log is None:
@@ -1393,20 +1409,13 @@ class Executor(RemoteExecutor):
         # Get or initialize the current state for this job
         # We persist state across calls because JobEventLog readers maintain position
         if cluster_id not in self._job_current_states:
-            self._job_current_states[cluster_id] = {
-                "status": JobStatus.PENDING,
-                "exit_code": None,
-                "exit_by_signal": False,
-                "exit_signal": None,
-                "hold_reason": None,
-                "held_since": None,
-            }
+            self._job_current_states[cluster_id] = JobState()
 
         current_state = self._job_current_states[cluster_id]
 
         # If job already reached a true terminal state, return cached result
         # Note: 'held' is NOT terminal - job may be released and continue
-        if current_state["status"].is_terminal():
+        if current_state.status.is_terminal():
             return current_state
 
         try:
@@ -1418,20 +1427,20 @@ class Executor(RemoteExecutor):
                 event_type = event.type
 
                 if event_type == JobEventType.SUBMIT:
-                    current_state["status"] = JobStatus.IDLE
+                    current_state.status = JobStatus.IDLE
 
                 elif event_type == JobEventType.EXECUTE:
-                    current_state["status"] = JobStatus.RUNNING
+                    current_state.status = JobStatus.RUNNING
 
                 elif event_type == JobEventType.JOB_EVICTED:
                     # Job was evicted but may be rescheduled
-                    current_state["status"] = JobStatus.IDLE
+                    current_state.status = JobStatus.IDLE
 
                 elif event_type == JobEventType.JOB_SUSPENDED:
-                    current_state["status"] = JobStatus.SUSPENDED
+                    current_state.status = JobStatus.SUSPENDED
 
                 elif event_type == JobEventType.JOB_UNSUSPENDED:
-                    current_state["status"] = JobStatus.RUNNING
+                    current_state.status = JobStatus.RUNNING
 
                 elif event_type == JobEventType.IMAGE_SIZE:
                     # Just an update, job is still running - don't change status
@@ -1440,46 +1449,46 @@ class Executor(RemoteExecutor):
                 elif event_type == JobEventType.FILE_TRANSFER:
                     # File transfer in progress - could be input (before run) or output (after)
                     # Don't override 'running' status if already running
-                    if current_state["status"] != JobStatus.RUNNING:
-                        current_state["status"] = JobStatus.TRANSFERRING
+                    if current_state.status != JobStatus.RUNNING:
+                        current_state.status = JobStatus.TRANSFERRING
 
                 elif event_type == JobEventType.JOB_HELD:
-                    current_state["status"] = JobStatus.HELD
+                    current_state.status = JobStatus.HELD
                     # Try to get hold reason from event
-                    current_state["hold_reason"] = event.get(
+                    current_state.hold_reason = event.get(
                         "HoldReason", "Unknown reason"
                     )
                     # Record when the job was held for timeout tracking
-                    current_state["held_since"] = time.time()
+                    current_state.held_since = time.time()
 
                 elif event_type == JobEventType.JOB_RELEASED:
                     # Job was released from hold, back to idle
-                    current_state["status"] = JobStatus.IDLE
-                    current_state["hold_reason"] = None
-                    current_state["held_since"] = None
+                    current_state.status = JobStatus.IDLE
+                    current_state.hold_reason = None
+                    current_state.held_since = None
 
                 elif event_type == JobEventType.JOB_TERMINATED:
-                    current_state["status"] = JobStatus.COMPLETED
+                    current_state.status = JobStatus.COMPLETED
                     # Extract exit information from the event
-                    current_state["exit_code"] = event.get("ReturnValue", None)
+                    current_state.exit_code = event.get("ReturnValue", None)
                     # Check if terminated by signal - look for TerminatedNormally=False
                     terminated_normally = event.get("TerminatedNormally", True)
-                    current_state["exit_by_signal"] = not terminated_normally
-                    if current_state["exit_by_signal"]:
-                        current_state["exit_signal"] = event.get(
+                    current_state.exit_by_signal = not terminated_normally
+                    if current_state.exit_by_signal:
+                        current_state.exit_signal = event.get(
                             "TerminatedBySignal", None
                         )
 
                 elif event_type == JobEventType.JOB_ABORTED:
-                    current_state["status"] = JobStatus.REMOVED
+                    current_state.status = JobStatus.REMOVED
 
                 elif event_type == JobEventType.JOB_RECONNECT_FAILED:
                     # Shadow couldn't reconnect, job will be rescheduled
-                    current_state["status"] = JobStatus.IDLE
+                    current_state.status = JobStatus.IDLE
 
                 elif event_type == JobEventType.SHADOW_EXCEPTION:
                     # Shadow had an exception, job may be rescheduled
-                    current_state["status"] = JobStatus.IDLE
+                    current_state.status = JobStatus.IDLE
 
                 elif event_type == JobEventType.JOB_DISCONNECTED:
                     # Starter and shadow are disconnected, may reconnect
@@ -1487,40 +1496,47 @@ class Executor(RemoteExecutor):
 
                 elif event_type == JobEventType.JOB_RECONNECTED:
                     # Reconnected after disconnect
-                    current_state["status"] = JobStatus.RUNNING
+                    current_state.status = JobStatus.RUNNING
 
                 # Note: Other event types (ATTRIBUTE_UPDATE, CHECKPOINTED, etc.)
                 # don't change the fundamental job state, so we ignore them.
 
             self.logger.debug(
                 f"Read {events_read} new events for cluster {cluster_id}, "
-                f"status: {current_state['status'].display_name}"
+                f"status: {current_state.status.display_name}"
             )
 
         except Exception as e:
             self.logger.warning(
                 f"Error reading job events for cluster {cluster_id}: {e}"
             )
-            # Return the last known state rather than None
-            return current_state
+            # Return None so the fallback mechanism can kick in.
+            # The last known state is preserved in self._job_current_states
+            # and will be available if the log becomes readable again.
+            return None
 
         return current_state
 
-    def _process_job_state(
-        self, current_job: SubmittedJobInfo, job_state: dict
+    def _report_and_resolve_job_state(
+        self, current_job: SubmittedJobInfo, job_state: JobState
     ) -> Optional[SubmittedJobInfo]:
         """
-        Process a job's state and handle reporting/cleanup.
+        Evaluate a job's state, report results to Snakemake, and resolve whether
+        the job should remain in the active tracking list.
+
+        For terminal states (completed, removed), this reports success/error to
+        the Snakemake framework and cleans up tracking data. For active states,
+        it returns the job so it continues to be monitored.
 
         Args:
             current_job: The SubmittedJobInfo for this job
-            job_state: The job state dict with status and other info
+            job_state: The JobState with current status and metadata
 
         Returns:
             The current_job if it should remain active, None if it's terminal
         """
         cluster_id = current_job.external_jobid
-        status = job_state["status"]
+        status = job_state.status
 
         self.logger.debug(
             f"Job {current_job.job.jobid} with HTCondor Cluster ID "
@@ -1545,11 +1561,15 @@ class Executor(RemoteExecutor):
             return current_job
 
         elif status == JobStatus.COMPLETED:
-            exit_code = job_state.get("exit_code")
-            exit_by_signal = job_state.get("exit_by_signal", False)
+            exit_code = job_state.exit_code
+            exit_by_signal = job_state.exit_by_signal
 
             if exit_by_signal:
-                signal = job_state.get("exit_signal", "unknown")
+                signal = (
+                    job_state.exit_signal
+                    if job_state.exit_signal is not None
+                    else "unknown"
+                )
                 self.logger.debug(
                     f"Job {current_job.job.jobid} with HTCondor Cluster ID "
                     f"{cluster_id} terminated by signal {signal}"
@@ -1585,8 +1605,8 @@ class Executor(RemoteExecutor):
             return None
 
         elif status == JobStatus.HELD:
-            hold_reason = job_state.get("hold_reason", "Unknown reason")
-            held_since = job_state.get("held_since")
+            hold_reason = job_state.hold_reason or "Unknown reason"
+            held_since = job_state.held_since
 
             # Check if hold timeout has been exceeded
             if self._held_timeout == 0:
@@ -1648,7 +1668,7 @@ class Executor(RemoteExecutor):
 
     async def check_active_jobs(
         self, active_jobs: List[SubmittedJobInfo]
-    ) -> Generator[SubmittedJobInfo, None, None]:
+    ) -> AsyncGenerator[SubmittedJobInfo, None]:
         """
         Check the status of active jobs by reading their HTCondor log files.
 
@@ -1685,7 +1705,7 @@ class Executor(RemoteExecutor):
 
                 if job_state is not None:
                     # Got state from log - process it immediately
-                    result = self._process_job_state(current_job, job_state)
+                    result = self._report_and_resolve_job_state(current_job, job_state)
                     if result is not None:
                         yield result
                 else:
@@ -1730,7 +1750,7 @@ class Executor(RemoteExecutor):
                 job_state = schedd_results[cluster_id]
                 # Update cached state
                 self._job_current_states[cluster_id] = job_state
-                result = self._process_job_state(current_job, job_state)
+                result = self._report_and_resolve_job_state(current_job, job_state)
                 if result is not None:
                     yield result
             else:
@@ -1750,19 +1770,19 @@ class Executor(RemoteExecutor):
                 job_state = history_results[cluster_id]
                 # Update cached state
                 self._job_current_states[cluster_id] = job_state
-                result = self._process_job_state(current_job, job_state)
+                result = self._report_and_resolve_job_state(current_job, job_state)
                 if result is not None:
                     yield result
             else:
-                # Job not found anywhere - report as lost
-                self.report_job_error(
-                    current_job,
-                    msg=f"Job {current_job.job.jobid} with HTCondor Cluster ID "
-                    f"{cluster_id} could not be tracked. Log file missing and "
-                    "job not found in schedd or history. The job may have been "
-                    "lost or removed externally.",
+                # Job not found anywhere - keep monitoring.
+                # This could be a transient error (e.g., schedd was briefly
+                # unreachable), so we don't report the job as lost yet.
+                self.logger.warning(
+                    f"Job {current_job.job.jobid} with HTCondor Cluster ID "
+                    f"{cluster_id} could not be found in log files, schedd, or "
+                    "history. Keeping job active in case this is transient."
                 )
-                self._cleanup_job_tracking(cluster_id)
+                yield current_job
 
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
         # Cancel all active jobs.
@@ -1770,9 +1790,8 @@ class Executor(RemoteExecutor):
 
         if active_jobs:
             schedd = htcondor.Schedd()
-            job_ids = [current_job.external_jobid for current_job in active_jobs]
-            # For some reason HTCondor requires not the BATCH_NAME but the full JOB_IDS
-            job_ids = [f"ClusterId == {x}.0" for x in job_ids]
+            # schedd.act() with a list expects job specs as "clusterID.procID" strings
+            job_ids = [f"{current_job.external_jobid}.0" for current_job in active_jobs]
             self.logger.debug(f"Cancelling HTCondor jobs: {job_ids}")
             try:
                 schedd.act(htcondor.JobAction.Remove, job_ids)
