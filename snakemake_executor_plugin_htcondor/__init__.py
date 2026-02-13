@@ -660,6 +660,20 @@ class Executor(RemoteExecutor):
             f"Transfer input files: {transfer_input_files}\n"
             f"Transfer output files: {transfer_output_files}"
         )
+
+        # Warning for the absolute paths getting flattened after being sent to HTCondor
+        if job.resources.get("preserve_relative_paths", True):
+            abs_paths = [p for p in transfer_input_files if isabs(p)]
+            if abs_paths:
+                self.logger.warning(
+                    f"Input files contain absolute paths: {abs_paths}, "
+                    "which will be flattened to their basename on the EP. "
+                    "This can cause unexpected failures when "
+                    "preserve_relative_paths is True. "
+                    "Use relative paths in your Snakefile to preserve "
+                    "directory structure."
+                )
+
         return transfer_input_files, transfer_output_files
 
     def _prepare_config_files_for_transfer(
