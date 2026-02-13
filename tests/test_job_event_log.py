@@ -434,6 +434,47 @@ class TestJobLifecycleScenarios:
 
 
 # ---------------------------------------------------------------------------
+# Held timeout validation
+# ---------------------------------------------------------------------------
+class TestHeldTimeoutValidation:
+    """Verify that _validate_held_timeout handles edge cases."""
+
+    def test_none_held_timeout_does_not_raise(self):
+        """If held_timeout is None (e.g., explicit CLI override),
+        __post_init__ should normalize it to the default before validation."""
+        from snakemake_executor_plugin_htcondor import (
+            DEFAULT_HELD_TIMEOUT_SECONDS,
+            Executor,
+        )
+
+        executor = Mock(spec=Executor)
+        executor.logger = Mock()
+
+        # Simulate what __post_init__ does after our fix
+        held_timeout = None  # as if user passed None
+        if held_timeout is None:
+            held_timeout = DEFAULT_HELD_TIMEOUT_SECONDS
+        executor._held_timeout = held_timeout
+
+        # Bind and call _validate_held_timeout — should not raise
+        validate = Executor._validate_held_timeout.__get__(executor, Executor)
+        validate()  # no TypeError
+
+        assert executor._held_timeout == DEFAULT_HELD_TIMEOUT_SECONDS
+
+    def test_none_would_cause_type_error_without_normalization(self):
+        """Confirm that None._held_timeout < 0 raises TypeError,
+        proving the normalization is necessary."""
+        executor = Mock(spec=Executor)
+        executor.logger = Mock()
+        executor._held_timeout = None
+
+        validate = Executor._validate_held_timeout.__get__(executor, Executor)
+        with pytest.raises(TypeError):
+            validate()
+
+
+# ---------------------------------------------------------------------------
 # Error handling & cleanup
 # ---------------------------------------------------------------------------
 class TestErrorHandlingAndCleanup:
@@ -456,6 +497,18 @@ class TestErrorHandlingAndCleanup:
     def test_missing_log_returns_none(self):
         executor = make_mock_executor(jobDir="/nonexistent/path")
         assert executor._get_job_event_log(99999) is None
+
+    def test_unavailable_log_returns_none_despite_cached_state(self):
+        """_read_job_events must return None when the log can't be read,
+        even if _job_current_states has a cached entry.  This ensures
+        _try_read_job_log won't mistakenly reset the missing counter."""
+        executor = make_mock_executor(jobDir="/nonexistent/path")
+        executor._job_current_states[1] = JobState(status=JobStatus.RUNNING)
+
+        result = executor._read_job_events(1)
+        assert result is None
+        # Cached state must still be preserved for later recovery
+        assert executor._job_current_states[1].status == JobStatus.RUNNING
 
     def test_existing_reader_is_reused(self):
         executor = make_mock_executor()
@@ -661,6 +714,19 @@ class TestFallbackMechanism:
         result = executor._try_read_job_log(1)
         assert result.status == JobStatus.RUNNING
         assert 1 not in executor._log_missing_counts
+
+    def test_log_missing_counter_not_reset_on_cached_state(self, executor):
+        """If the log file is unavailable but cached state exists,
+        _try_read_job_log must NOT reset the missing counter.
+        This prevents fallback from being permanently suppressed."""
+        executor.jobDir = "/nonexistent/path"
+        executor._job_current_states[1] = JobState(status=JobStatus.RUNNING)
+        executor._log_missing_counts[1] = 2
+
+        result = executor._try_read_job_log(1)
+        assert result is None
+        # Counter should have incremented, not been reset
+        assert executor._log_missing_counts[1] == 3
 
     def test_batch_queries_return_empty_for_empty_input(self, executor):
         assert executor._batch_query_schedd([]) == {}

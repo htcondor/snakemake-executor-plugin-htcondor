@@ -75,6 +75,10 @@ def is_shared_fs(in_path, shared_prefixes) -> bool:
 
 
 # Optional:
+# Default timeout in seconds for held jobs (4 hours).
+DEFAULT_HELD_TIMEOUT_SECONDS = 4 * 60 * 60
+
+
 # Define additional settings for your executor.
 # They will occur in the Snakemake CLI as --<executor-name>-<param-name>
 # Omit this class if you don't need any.
@@ -101,7 +105,7 @@ class ExecutorSettings(ExecutorSettingsBase):
         },
     )
     held_timeout: Optional[int] = field(
-        default=4 * 60 * 60,
+        default=DEFAULT_HELD_TIMEOUT_SECONDS,
         metadata={
             "help": "Timeout in seconds for held jobs before the Executor will treat "
             "them as failed. This allows time for manual intervention "
@@ -182,8 +186,13 @@ class Executor(RemoteExecutor):
         # the last known state so we can return it when there are no new events.
         self._job_current_states: Dict[int, JobState] = {}
 
-        # Held job timeout - allows time for manual intervention before failing
-        self._held_timeout = self.workflow.executor_settings.held_timeout
+        # Held job timeout - allows time for manual intervention before failing.
+        # Normalize None to the default value so downstream comparisons don't
+        # raise TypeError (held_timeout is Optional[int]).
+        held_timeout = self.workflow.executor_settings.held_timeout
+        if held_timeout is None:
+            held_timeout = DEFAULT_HELD_TIMEOUT_SECONDS
+        self._held_timeout = held_timeout
         self._validate_held_timeout()
 
         # Track when the workflow started for efficient condor_history queries.
@@ -1401,10 +1410,20 @@ class Executor(RemoteExecutor):
         Returns:
             A JobState with current job state info, or None if we couldn't read the log.
         """
+        # If job already reached a true terminal state, return cached result
+        # immediately — no log access needed.
+        # Note: 'held' is NOT terminal - job may be released and continue
+        cached = self._job_current_states.get(cluster_id)
+        if cached is not None and cached.status.is_terminal():
+            return cached
+
         event_log = self._get_job_event_log(cluster_id)
         if event_log is None:
-            # Can't read log yet - return existing state if we have one, else None
-            return self._job_current_states.get(cluster_id)
+            # Can't read log - return None so _try_read_job_log knows the log
+            # is still unavailable and won't reset the missing counter.
+            # The cached state in _job_current_states is preserved and will be
+            # available when the log becomes readable again.
+            return None
 
         # Get or initialize the current state for this job
         # We persist state across calls because JobEventLog readers maintain position
@@ -1412,11 +1431,6 @@ class Executor(RemoteExecutor):
             self._job_current_states[cluster_id] = JobState()
 
         current_state = self._job_current_states[cluster_id]
-
-        # If job already reached a true terminal state, return cached result
-        # Note: 'held' is NOT terminal - job may be released and continue
-        if current_state.status.is_terminal():
-            return current_state
 
         try:
             # Read all available NEW events without blocking (stop_after=0)
