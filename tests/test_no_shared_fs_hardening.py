@@ -388,6 +388,26 @@ class TestOutputRemaps:
         warning_msg = escape_warnings[0][0][0]
         assert "../escaping_file.txt" in warning_msg
 
+    def test_warning_for_workdir_prefix_collision(self):
+        """A path like ../workdir_evil/file that resolves to /ap/workdir_evil/file
+        must still trigger the escape warning — it shares the string prefix
+        '/ap/workdir' but is NOT inside '/ap/workdir/'."""
+        job = _make_job(output_files=["../workdir_evil/file.txt"])
+        _, _, remaps = self.executor._get_files_for_transfer(job)
+
+        # Remap still generated
+        assert len(remaps) == 1
+        _, ap_side = remaps[0].split(" = ", 1)
+        assert ap_side.strip() == "/ap/workdir_evil/file.txt"
+
+        # Warning must fire despite the shared string prefix
+        escape_warnings = [
+            c
+            for c in self.executor.logger.warning.call_args_list
+            if "outside" in str(c).lower()
+        ]
+        assert len(escape_warnings) == 1
+
     def test_no_warning_for_relative_output_within_workdir(self):
         """A normal relative output that stays inside workdir should not warn."""
         job = _make_job(output_files=["output/result.csv"])

@@ -761,7 +761,10 @@ class Executor(RemoteExecutor):
                 remap = f"{out_path} = {out_path}"
             else:
                 abs_ap_dest = normpath(join(workdir, out_path))
-                if not abs_ap_dest.startswith(workdir):
+                # Use workdir + sep to prevent prefix collisions:
+                # e.g. "/ap/workdir_evil/f" would wrongly pass startswith("/ap/workdir")
+                workdir_prefix = workdir if workdir.endswith(sep) else workdir + sep
+                if not abs_ap_dest.startswith(workdir_prefix):
                     self.logger.warning(
                         f"Output file '{out_path}' resolves to '{abs_ap_dest}', "
                         f"which is outside the working directory '{workdir}'. "
