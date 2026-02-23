@@ -761,6 +761,14 @@ class Executor(RemoteExecutor):
                 remap = f"{out_path} = {out_path}"
             else:
                 abs_ap_dest = normpath(join(workdir, out_path))
+                if not abs_ap_dest.startswith(workdir):
+                    self.logger.warning(
+                        f"Output file '{out_path}' resolves to '{abs_ap_dest}', "
+                        f"which is outside the working directory '{workdir}'. "
+                        "This remap may overwrite files in unexpected locations "
+                        "on the Access Point. Consider using output paths that "
+                        "stay within the workflow working directory."
+                    )
                 remap = f"{out_path} = {abs_ap_dest}"
             if remap not in transfer_output_remaps:
                 transfer_output_remaps.append(remap)

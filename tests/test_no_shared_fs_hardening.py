@@ -368,6 +368,39 @@ class TestOutputRemaps:
         assert ".." not in ep_side.strip()
         assert ".." not in ap_side.strip()
 
+    def test_warning_when_relative_output_escapes_workdir(self):
+        """A relative output like '../foo.txt' that resolves outside workdir_init
+        should trigger a warning about potentially overwriting unexpected AP locations.
+        """
+        job = _make_job(output_files=["../escaping_file.txt"])
+        _, _, remaps = self.executor._get_files_for_transfer(job)
+
+        # The remap should still be generated (warning, not error)
+        assert len(remaps) == 1
+        _, ap_side = remaps[0].split(" = ", 1)
+        # normpath("/ap/workdir/../escaping_file.txt") -> "/ap/escaping_file.txt"
+        assert ap_side.strip() == "/ap/escaping_file.txt"
+
+        # A warning about escaping the workdir must have been logged
+        warning_calls = self.executor.logger.warning.call_args_list
+        escape_warnings = [c for c in warning_calls if "outside" in str(c).lower()]
+        assert len(escape_warnings) == 1
+        warning_msg = escape_warnings[0][0][0]
+        assert "../escaping_file.txt" in warning_msg
+
+    def test_no_warning_for_relative_output_within_workdir(self):
+        """A normal relative output that stays inside workdir should not warn."""
+        job = _make_job(output_files=["output/result.csv"])
+        _, _, remaps = self.executor._get_files_for_transfer(job)
+
+        assert len(remaps) == 1
+        escape_warnings = [
+            c
+            for c in self.executor.logger.warning.call_args_list
+            if "outside" in str(c).lower()
+        ]
+        assert len(escape_warnings) == 0
+
     def test_remap_for_custom_output_resource(self):
         """htcondor_transfer_output_files relative paths also get remaps."""
         job = _make_job(resources={"htcondor_transfer_output_files": "logs/run.log"})
