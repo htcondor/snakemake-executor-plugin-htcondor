@@ -129,7 +129,8 @@ common_settings = CommonSettings(
     # Whether the executor implies to not have a shared file system
     implies_no_shared_fs=False,
     # whether to deploy workflow sources to default storage provider before execution
-    job_deploy_sources=True,
+    # --> This only triggers when ``can_transfer_local_files`` is False, so no need to enable.
+    job_deploy_sources=False,
     # whether arguments for setting the storage provider shall be passed to jobs
     pass_default_storage_provider_args=True,
     # whether arguments for setting default resources shall be passed to jobs
@@ -137,7 +138,11 @@ common_settings = CommonSettings(
     # whether environment variables shall be passed to jobs (if False, use
     # self.envvars() to obtain a dict of environment variables and their values
     # and pass them e.g. as secrets to the execution backend)
-    pass_envvar_declarations_to_cmd=True,
+    # Set to False: we inject env vars via HTCondor's native `environment` key
+    # in run_job() instead. Embedding them inline as "export VAR=val &&" in the
+    # arguments string breaks the job_wrapper path because the arguments string
+    # would no longer start with "python -m snakemake" and prefix-stripping fails.
+    pass_envvar_declarations_to_cmd=False,
     # whether the default storage provider shall be deployed before the job is run on
     # the remote node. Usually set to True if the executor does not assume a shared fs
     auto_deploy_default_storage_provider=True,
@@ -267,26 +272,59 @@ class Executor(RemoteExecutor):
 
     def _add_file_if_transferable(
         self,
-        file_path: str,
+        file_path,
         transfer_list: List[str],
         expand_wildcards: bool = False,
         job: Optional[JobExecutorInterface] = None,
         validate_exists: bool = True,
-    ) -> None:
+        warn_absolute: bool = False,
+        skip_temp: bool = False,
+    ) -> bool:
         """
         Add a file to the transfer list if it's not on a shared filesystem.
 
+        This is the single gatekeeper for both input and output transfer lists.
+        It handles temp-file skipping, shared-FS filtering, absolute-path
+        warnings, normalization, and deduplication.
+
         Args:
-            file_path: Path to potentially transfer
+            file_path: Path to the file to potentially transfer.  May be a
+                string or a Snakemake path object (e.g. with ``.flags``).
             transfer_list: List to add the file to
             expand_wildcards: Whether to expand wildcards/params in the path
             job: Job object (required if expand_wildcards is True)
-            validate_exists: Whether to validate file existence (default True)
+            validate_exists: Whether to validate file existence (default True).
+                Set to False for output files that do not exist yet.
+            warn_absolute: If True, log a warning when the path is absolute and
+                not on a shared filesystem prefix.
+            skip_temp: If True, skip paths whose ``.flags["temp"]`` is set.
+                Use this for output files — temp() outputs are deleted on the EP
+                during group execution and must not be listed for transfer.
+
+        Returns:
+            True if the file was added to *transfer_list*, False if it was
+            skipped for any reason (empty path, temp, shared FS, duplicate, …).
         """
         # Explicitly handle empty/None filepaths
         if file_path is None or str(file_path).strip() == "":
             self.logger.debug("Skipping empty or None filepath")
-            return
+            return False
+
+        # Skip temp() outputs — the EP deletes them during group execution once
+        # they've been consumed by their downstream rule.  Declaring them in
+        # transfer_output_files would cause HTCondor to error when it can't find
+        # the already-deleted file at transfer time.  This check must happen
+        # before the str() conversion so we can inspect the Snakemake path
+        # object's .flags attribute.
+        if (
+            skip_temp
+            and hasattr(file_path, "flags")
+            and file_path.flags.get("temp", False)
+        ):
+            self.logger.debug(
+                f"Skipping temp file (deleted on EP during execution): {file_path}"
+            )
+            return False
 
         file_path = str(file_path).strip()
 
@@ -310,14 +348,27 @@ class Executor(RemoteExecutor):
         # Check if already in transfer list (after normalization)
         if file_path in transfer_list:
             self.logger.debug(f"File already in transfer list: {file_path}")
-            return
+            return False
 
         # Check if on shared filesystem
         if is_shared_fs(file_path, self.shared_fs_prefixes):
             self.logger.debug(
                 f"File on shared filesystem, skipping transfer: {file_path}"
             )
-            return
+            return False
+
+        # Warn when an absolute path is used for a job file in no-shared-fs mode.
+        # Absolute paths are likely to cause job failure on the execution point
+        # because the EP scratch directory will not have that absolute path.
+        if warn_absolute and isabs(file_path):
+            self.logger.warning(
+                f"File '{file_path}' uses an absolute path and is not under any "
+                "configured shared filesystem prefix. When running without a globally "
+                "shared filesystem, absolute paths for job files are likely to cause "
+                "job failure — the execution point will not have access to this path. "
+                "Declare these files using paths relative to the submit directory "
+                "instead. Attempting job submission anyway."
+            )
 
         # Validate file existence if requested
         if validate_exists and not exists(file_path):
@@ -328,6 +379,7 @@ class Executor(RemoteExecutor):
 
         self.logger.debug(f"Adding file to transfer list: {file_path}")
         transfer_list.append(file_path)
+        return True
 
     def _add_module_snakefiles(
         self,
@@ -402,6 +454,30 @@ class Executor(RemoteExecutor):
             return [f.strip() for f in files_spec.split(",") if f.strip()]
         else:
             return list(files_spec)
+
+    def _format_htcondor_environment(self, envvars: dict) -> str:
+        """
+        Serialize a dict of environment variables to HTCondor's new-style
+        environment string format.
+
+        HTCondor new-style format places each assignment as KEY="value",
+        separated by spaces.  Double-quote characters inside a value are
+        escaped by doubling them (e.g. a value containing '"' becomes '""').
+
+        Example output: 'SNAKEMAKE_STORAGE_S3_REGION="us-east-1" FOO="bar"'
+
+        Args:
+            envvars: Dict mapping variable names to their string values.
+
+        Returns:
+            HTCondor new-style environment string, ready to assign to the
+            ``environment`` key in an htcondor.Submit dict.
+        """
+        parts = []
+        for k, v in envvars.items():
+            v_escaped = str(v).replace('"', '""')
+            parts.append(f'{k}="{v_escaped}"')
+        return " ".join(parts)
 
     def _format_size_mb(self, mb_value: int) -> str:
         """
@@ -514,21 +590,34 @@ class Executor(RemoteExecutor):
 
     def _get_files_for_transfer(
         self, job: JobExecutorInterface
-    ) -> tuple[List[str], List[str]]:
+    ) -> tuple[List[str], List[str], List[str]]:
         """
         Determine which input and output files need to be transferred by HTCondor.
 
         Files on shared filesystem prefixes are excluded from transfer.
 
+        Output files are transferred explicitly (not as top-level directories) so
+        that only declared outputs are touched on the AP after a job completes.
+        This prevents Snakemake's mtime-based dependency tracking from being
+        invalidated when an output directory also contains inputs for a later rule.
+
+        A ``transfer_output_remaps`` list is returned alongside the output files
+        so that each output lands at its correct absolute destination on the AP
+        rather than relying solely on HTCondor's ``preserve_relative_paths``
+        semantics.
+
         Args:
             job: The job being prepared for submission
 
         Returns:
-            Tuple of (transfer_input_files, transfer_output_files) lists
+            Tuple of (transfer_input_files, transfer_output_files,
+            transfer_output_remaps) where transfer_output_remaps is a list of
+            HTCondor remap strings in the form ``"ep_path = ap_absolute_path"``.
         """
         self.logger.debug(f"Determining files for transfer for job: {job}")
         transfer_input_files = []
-        transfer_output_files = []
+        transfer_output_files = []  # explicit EP output paths
+        transfer_output_remaps = []  # HTCondor remap strings: "ep_path = ap_abs_path"
 
         # Add the main snakefile to the transfer list if not on shared filesystem
         main_snakefile = self.get_snakefile()
@@ -549,71 +638,68 @@ class Executor(RemoteExecutor):
                 inputs = {path.split(sep)[0] for path in inputs}
 
             for path in inputs:
-                self._add_file_if_transferable(path, transfer_input_files)
+                self._add_file_if_transferable(
+                    path, transfer_input_files, warn_absolute=True
+                )
 
         # NOTE: Config files are handled separately by _prepare_config_files_for_transfer()
         # which returns relative paths for both the job arguments and the transfer list.
 
-        # Process output files (only transfer top-most output directories)
-        # NOTE: For outputs, we only transfer top-level directories to avoid
-        # transferring deeply nested structures. HTCondor will bring back the
-        # entire directory tree from the execution point.
-        if job.output:
-            top_most_output_directories = {path.split(sep)[0] for path in job.output}
-            for path in top_most_output_directories:
-                self._add_file_if_transferable(
-                    path, transfer_output_files, validate_exists=False
-                )
+        # Process output files — transfer each declared output explicitly.
+        #
+        # Previously the executor transferred only the top-most output directory
+        # (e.g. "output/" for any file under output/).  That caused a subtle
+        # mtime bug: when a rule's inputs and outputs share a directory (e.g.
+        # both rule 1's outputs and rule 2's inputs live in "output/"), HTCondor
+        # would transfer the entire directory back to the AP, touching the input
+        # files and breaking Snakemake's mtime-based dependency tracking.
+        #
+        # GROUP JOB SPECIAL CASE: job.output for a GroupJob contains only the
+        # group's *external* outputs — those consumed by rules outside the group.
+        # Internal intermediates are NOT in job.output.  However, Snakemake's
+        # postprocess step checks ALL outputs of ALL rules in the group for
+        # existence on the AP after the job completes.  The fix is to also
+        # collect outputs from each individual job via job.jobs.
+        all_output_paths = list(job.output) if job.output else []
+        if job.is_group() and hasattr(job, "jobs"):
+            seen_paths = {str(p) for p in all_output_paths}
+            for individual_job in job.jobs:
+                for p in individual_job.output:
+                    p_str = str(p)
+                    if p_str not in seen_paths:
+                        seen_paths.add(p_str)
+                        all_output_paths.append(p)
 
-        # Process script and notebook files from all rules in the job
-        # For grouped jobs, we need to iterate over job.jobs to access each individual
-        # job's rule which contains the script/notebook attributes.
-        # For individual jobs, job.rule directly has these attributes.
+        for path in all_output_paths:
+            self._add_file_if_transferable(
+                path,
+                transfer_output_files,
+                validate_exists=False,
+                warn_absolute=True,
+                skip_temp=True,
+            )
+
+        # Process script and notebook files from all rules in the job.
+        # For grouped jobs we iterate over job.jobs to reach each individual
+        # rule; for individual jobs the single rule lives on job.rule directly.
         if job.is_group():
-            # GroupJob: iterate over individual jobs within the group
-            individual_jobs = job.jobs if hasattr(job, "jobs") else []
-            for individual_job in individual_jobs:
-                if hasattr(individual_job, "rule"):
-                    rule = individual_job.rule
-                    if hasattr(rule, "script") and rule.script:
-                        self.logger.debug(
-                            f"Processing script from grouped job: {rule.script}"
-                        )
-                        self._add_file_if_transferable(
-                            rule.script,
-                            transfer_input_files,
-                            expand_wildcards=True,
-                            job=individual_job,
-                        )
-                    if hasattr(rule, "notebook") and rule.notebook:
-                        self.logger.debug(
-                            f"Processing notebook from grouped job: {rule.notebook}"
-                        )
-                        self._add_file_if_transferable(
-                            rule.notebook,
-                            transfer_input_files,
-                            expand_wildcards=True,
-                            job=individual_job,
-                        )
+            rules_and_jobs = [
+                (ij.rule, ij)
+                for ij in (job.jobs if hasattr(job, "jobs") else [])
+                if hasattr(ij, "rule")
+            ]
         else:
-            # Individual job: access rule directly
-            if hasattr(job, "rule"):
-                rule = job.rule
-                if hasattr(rule, "script") and rule.script:
-                    self.logger.debug(f"Processing script: {rule.script}")
+            rules_and_jobs = [(job.rule, job)] if hasattr(job, "rule") else []
+
+        for rule, owner_job in rules_and_jobs:
+            for attr in ("script", "notebook"):
+                if value := getattr(rule, attr, None):
+                    self.logger.debug(f"Processing {attr}: {value}")
                     self._add_file_if_transferable(
-                        rule.script,
+                        value,
                         transfer_input_files,
                         expand_wildcards=True,
-                        job=job,
-                    )
-                if hasattr(rule, "notebook") and rule.notebook:
-                    self.logger.debug(f"Processing notebook: {rule.notebook}")
-                    self._add_file_if_transferable(
-                        rule.notebook,
-                        transfer_input_files,
-                        expand_wildcards=True,
-                        job=job,
+                        job=owner_job,
                     )
 
         # Process additional input files from htcondor_transfer_input_files resource
@@ -628,6 +714,7 @@ class Executor(RemoteExecutor):
                     transfer_input_files,
                     expand_wildcards=expand_wildcards,
                     job=job,
+                    warn_absolute=True,
                 )
 
         # Process additional output files from htcondor_transfer_output_files resource
@@ -643,6 +730,7 @@ class Executor(RemoteExecutor):
                     expand_wildcards=expand_wildcards,
                     job=job,
                     validate_exists=False,
+                    warn_absolute=True,
                 )
 
         # Explicitly handle job_wrapper if specified
@@ -656,25 +744,44 @@ class Executor(RemoteExecutor):
                 job=job,
             )
 
+        # Build transfer_output_remaps for all output paths.
+        #
+        # For relative paths: remap to their absolute location under workdir_init
+        # so HTCondor places the file at the correct AP destination regardless of
+        # preserve_relative_paths semantics.
+        #
+        # For absolute paths: use an identity remap ("/abs/p = /abs/p") so
+        # HTCondor places the file at that exact absolute location on the AP
+        # rather than dropping it (by basename only) into the AP initial working
+        # directory — which is the default when no remap is present.
+        workdir = self.workflow.workdir_init
+        for out_path in transfer_output_files:
+            if isabs(out_path):
+                # Identity remap: EP absolute path → same absolute path on AP
+                remap = f"{out_path} = {out_path}"
+            else:
+                abs_ap_dest = normpath(join(workdir, out_path))
+                # Use workdir + sep to prevent prefix collisions:
+                # e.g. "/ap/workdir_evil/f" would wrongly pass startswith("/ap/workdir")
+                workdir_prefix = workdir if workdir.endswith(sep) else workdir + sep
+                if not abs_ap_dest.startswith(workdir_prefix):
+                    self.logger.warning(
+                        f"Output file '{out_path}' resolves to '{abs_ap_dest}', "
+                        f"which is outside the working directory '{workdir}'. "
+                        "This remap may overwrite files in unexpected locations "
+                        "on the Access Point. Consider using output paths that "
+                        "stay within the workflow working directory."
+                    )
+                remap = f"{out_path} = {abs_ap_dest}"
+            if remap not in transfer_output_remaps:
+                transfer_output_remaps.append(remap)
+
         self.logger.debug(
             f"Transfer input files: {transfer_input_files}\n"
-            f"Transfer output files: {transfer_output_files}"
+            f"Transfer output files: {transfer_output_files}\n"
+            f"Transfer output remaps: {transfer_output_remaps}"
         )
-
-        # Warning for the absolute paths getting flattened after being sent to HTCondor
-        if job.resources.get("preserve_relative_paths", True):
-            abs_paths = [p for p in transfer_input_files if isabs(p)]
-            if abs_paths:
-                self.logger.warning(
-                    f"Input files contain absolute paths: {abs_paths}, "
-                    "which will be flattened to their basename on the EP. "
-                    "This can cause unexpected failures when "
-                    "preserve_relative_paths is True. "
-                    "Use relative paths in your Snakefile to preserve "
-                    "directory structure."
-                )
-
-        return transfer_input_files, transfer_output_files
+        return transfer_input_files, transfer_output_files, transfer_output_remaps
 
     def _prepare_config_files_for_transfer(
         self, job_args: str, shared_fs_prefixes: List[str]
@@ -869,7 +976,7 @@ class Executor(RemoteExecutor):
 
     def _get_exec_args_and_transfer_files(
         self, job: JobExecutorInterface, needs_transfer: bool
-    ) -> tuple[str, str, List[str], List[str]]:
+    ) -> tuple[str, str, List[str], List[str], List[str]]:
         """
         Get the executable, arguments, and transfer file lists for a job.
 
@@ -893,7 +1000,9 @@ class Executor(RemoteExecutor):
             needs_transfer: Whether file transfer is needed (False for full shared FS)
 
         Returns:
-            Tuple of (executable, final_arguments, transfer_input_files, transfer_output_files)
+            Tuple of (executable, final_arguments, transfer_input_files,
+            transfer_output_files, transfer_output_remaps) where
+            transfer_output_remaps is a list of HTCondor remap strings.
         """
         # Get base executable and arguments
         job_exec, job_args = self._get_base_exec_and_args(job)
@@ -905,7 +1014,7 @@ class Executor(RemoteExecutor):
             self.logger.debug(
                 "Full shared filesystem mode - skipping transfer preparation"
             )
-            return job_exec, job_args, [], []
+            return job_exec, job_args, [], [], []
 
         # Modes 2 & 3: Need to prepare files for transfer
         if self.shared_fs_prefixes:
@@ -918,7 +1027,9 @@ class Executor(RemoteExecutor):
             )
 
         # Get files that need to be transferred (excludes config files)
-        transfer_input_files, transfer_output_files = self._get_files_for_transfer(job)
+        transfer_input_files, transfer_output_files, transfer_output_remaps = (
+            self._get_files_for_transfer(job)
+        )
 
         # Prepare config files - this modifies the arguments to use correct paths
         # and returns the list of config files to transfer
@@ -936,8 +1047,17 @@ class Executor(RemoteExecutor):
         self.logger.debug(
             f"Final transfer_output_files ({len(transfer_output_files)}): {transfer_output_files}"
         )
+        self.logger.debug(
+            f"Final transfer_output_remaps ({len(transfer_output_remaps)}): {transfer_output_remaps}"
+        )
 
-        return job_exec, job_args, transfer_input_files, transfer_output_files
+        return (
+            job_exec,
+            job_args,
+            transfer_input_files,
+            transfer_output_files,
+            transfer_output_remaps,
+        )
 
     def _set_resources(
         self, submit_dict: dict, job: JobExecutorInterface, key: str, default=None
@@ -967,9 +1087,13 @@ class Executor(RemoteExecutor):
         needs_transfer = not self.workflow.storage_settings.shared_fs_usage
 
         # Get executable, arguments (with adjusted config paths), and transfer file lists
-        job_exec, job_args, transfer_input_files, transfer_output_files = (
-            self._get_exec_args_and_transfer_files(job, needs_transfer)
-        )
+        (
+            job_exec,
+            job_args,
+            transfer_input_files,
+            transfer_output_files,
+            transfer_output_remaps,
+        ) = self._get_exec_args_and_transfer_files(job, needs_transfer)
 
         # Creating submit dictionary which is passed to htcondor.Submit
         submit_dict = {
@@ -1029,12 +1153,36 @@ class Executor(RemoteExecutor):
                     sorted(transfer_output_files)
                 )
 
+            if transfer_output_remaps:
+                self.logger.debug(f"Transfer output remaps: {transfer_output_remaps}")
+                submit_dict["transfer_output_remaps"] = "; ".join(
+                    transfer_output_remaps
+                )
+
         # Basic commands
         self._set_resources(submit_dict, job, "getenv", default=False)
 
         self._set_resources(submit_dict, job, "preserve_relative_paths", default=True)
 
-        for key in ["environment", "input", "max_materialize", "max_idle"]:
+        # Build the HTCondor environment string by merging:
+        #   1. Snakemake-managed env vars (storage plugin tokens, etc.) from self.envvars()
+        #   2. Any extra env vars the user declared via the `environment` job resource
+        # Using HTCondor's native `environment` key is strictly better than
+        # embedding "export VAR=val &&" in the arguments string, which breaks
+        # the job_wrapper code path (the args string must start cleanly with
+        # "python -m snakemake" for prefix-stripping to succeed).
+        env_parts = []
+        snakemake_env = self.envvars()
+        if snakemake_env:
+            env_parts.append(self._format_htcondor_environment(snakemake_env))
+        if user_env := job.resources.get("environment"):
+            # User-provided value is appended after Snakemake vars; user values
+            # for the same key will shadow ours (last assignment wins in HTCondor).
+            env_parts.append(str(user_env))
+        if env_parts:
+            submit_dict["environment"] = " ".join(env_parts)
+
+        for key in ["input", "max_materialize", "max_idle"]:
             self._set_resources(submit_dict, job, key)
 
         # Commands for matchmaking

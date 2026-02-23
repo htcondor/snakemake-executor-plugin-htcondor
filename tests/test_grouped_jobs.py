@@ -30,7 +30,7 @@ class TestGroupedJobScriptTransfer:
             # Create group containing this job
             group_job = create_mock_group_job([individual_job])
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             assert script_path in transfer_input
         finally:
@@ -54,7 +54,7 @@ class TestGroupedJobScriptTransfer:
 
             group_job = create_mock_group_job(individual_jobs)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             # All three scripts should be in the transfer list
             for script in script_files:
@@ -78,7 +78,7 @@ class TestGroupedJobScriptTransfer:
 
             group_job = create_mock_group_job(individual_jobs)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             # Only the one script should be transferred
             assert script_path in transfer_input
@@ -119,7 +119,7 @@ class TestGroupedJobScriptTransfer:
 
             group_job = create_mock_group_job(individual_jobs)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             # Both expanded script paths should be in transfer list
             assert "scripts/process_sample1.py" in transfer_input
@@ -146,7 +146,7 @@ class TestGroupedJobNotebookTransfer:
             individual_job = create_mock_individual_job(notebook=notebook_path)
             group_job = create_mock_group_job([individual_job])
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             assert notebook_path in transfer_input
         finally:
@@ -170,7 +170,7 @@ class TestGroupedJobNotebookTransfer:
 
             group_job = create_mock_group_job(individual_jobs)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             for notebook in notebook_files:
                 assert notebook in transfer_input
@@ -197,7 +197,7 @@ class TestGroupedJobNotebookTransfer:
 
             group_job = create_mock_group_job(individual_jobs)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             # Both script and notebook should be transferred
             assert script_path in transfer_input
@@ -229,7 +229,7 @@ class TestGroupedJobInputOutputTransfer:
 
             group_job = create_mock_group_job(individual_jobs)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             assert input1.name in transfer_input
             assert input2.name in transfer_input
@@ -240,7 +240,7 @@ class TestGroupedJobInputOutputTransfer:
             os.unlink(input2.name)
 
     def test_combined_outputs_from_grouped_jobs(self):
-        """Test that output directories from all jobs in a group are collected."""
+        """Test that explicit output files from all jobs in a group are collected."""
         individual_jobs = [
             create_mock_individual_job(output_files=["output/job1_result.txt"]),
             create_mock_individual_job(output_files=["results/job2_data.csv"]),
@@ -248,11 +248,18 @@ class TestGroupedJobInputOutputTransfer:
 
         group_job = create_mock_group_job(individual_jobs)
 
-        _, transfer_output = self.executor._get_files_for_transfer(group_job)
+        _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
+            group_job
+        )
 
-        # Top-level output directories should be transferred
-        assert "output" in transfer_output
-        assert "results" in transfer_output
+        # Explicit output files (not top-level directories) should be transferred
+        assert "output/job1_result.txt" in transfer_output
+        assert "results/job2_data.csv" in transfer_output
+        # Top-level directories must NOT appear (that was the old mtime-buggy behavior)
+        assert "output" not in transfer_output
+        assert "results" not in transfer_output
+        # A remap must exist for every transferred output
+        assert len(transfer_remaps) == len(transfer_output)
 
 
 class TestGroupedJobCustomTransferResources:
@@ -277,7 +284,7 @@ class TestGroupedJobCustomTransferResources:
                 individual_jobs, htcondor_transfer_input_files=helper_file.name
             )
 
-            transfer_input, _ = self.executor._get_files_for_transfer(group_job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(group_job)
 
             assert helper_file.name in transfer_input
         finally:
@@ -295,11 +302,15 @@ class TestGroupedJobCustomTransferResources:
             individual_jobs, htcondor_transfer_output_files="logs/,debug/"
         )
 
-        _, transfer_output = self.executor._get_files_for_transfer(group_job)
+        _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
+            group_job
+        )
 
         # Note: _parse_file_list strips trailing slashes
         assert "logs" in transfer_output
         assert "debug" in transfer_output
+        # A remap must exist for every transferred output
+        assert len(transfer_remaps) == len(transfer_output)
 
 
 class TestGroupedJobComplexScenarios:
@@ -334,8 +345,8 @@ class TestGroupedJobComplexScenarios:
                 individual_jobs, htcondor_transfer_input_files=helper.name
             )
 
-            transfer_input, transfer_output = self.executor._get_files_for_transfer(
-                group_job
+            transfer_input, transfer_output, transfer_remaps = (
+                self.executor._get_files_for_transfer(group_job)
             )
 
             # Verify all expected files are in transfer lists
@@ -343,8 +354,10 @@ class TestGroupedJobComplexScenarios:
             assert script2.name in transfer_input
             assert input_file.name in transfer_input
             assert helper.name in transfer_input
-            assert "intermediate" in transfer_output
-            assert "output" in transfer_output
+            assert "intermediate/step1_result.txt" in transfer_output
+            assert "output/final_result.txt" in transfer_output
+            # A remap must exist for every transferred output
+            assert len(transfer_remaps) == len(transfer_output)
         finally:
             for f in [script1, script2, input_file, helper]:
                 f.close()
@@ -354,10 +367,94 @@ class TestGroupedJobComplexScenarios:
         """Test that an empty group job doesn't cause errors."""
         group_job = create_mock_group_job([])
 
-        transfer_input, transfer_output = self.executor._get_files_for_transfer(
-            group_job
+        transfer_input, transfer_output, transfer_remaps = (
+            self.executor._get_files_for_transfer(group_job)
         )
 
         # Should complete without errors, returning empty or minimal transfers
         assert isinstance(transfer_input, list)
         assert isinstance(transfer_output, list)
+        assert transfer_remaps == []
+
+    def test_group_job_internal_intermediates_transferred(self):
+        """Regression test: internal intermediate outputs must be transferred back.
+
+        In real Snakemake, job.output for a GroupJob only contains *external*
+        outputs — those consumed by rules outside the group.  Internal
+        intermediates (produced and consumed entirely within the group) are NOT
+        in job.output.  However, Snakemake's postprocess step checks ALL outputs
+        of ALL rules in the group for existence on the AP after the job
+        completes.  If intermediates are not in transfer_output_files the job
+        succeeds on the EP but postprocess raises an OSError on the AP.
+
+        This test simulates the real scenario from the parallel_pipeline group:
+          parallel_split   → output/sample1_parallel_input.txt  (internal)
+          parallel_worker  → output/sample1_worker.txt          (internal)
+          parallel_agg     → output/sample1_parallel_final.txt  (external)
+        """
+        split_job = create_mock_individual_job(
+            output_files=["output/sample1_parallel_input.txt"]
+        )
+        worker_job = create_mock_individual_job(
+            output_files=["output/sample1_worker.txt"]
+        )
+        agg_job = create_mock_individual_job(
+            output_files=["output/sample1_parallel_final.txt"]
+        )
+
+        # Only the final output is external — intermediates deliberately omitted.
+        group_job = create_mock_group_job(
+            [split_job, worker_job, agg_job],
+            external_outputs=["output/sample1_parallel_final.txt"],
+        )
+
+        _, transfer_output, remaps = self.executor._get_files_for_transfer(group_job)
+
+        # All three outputs (including internals) must be transferred back.
+        assert "output/sample1_parallel_final.txt" in transfer_output
+        assert "output/sample1_parallel_input.txt" in transfer_output, (
+            "Internal intermediate output must be in transfer list — "
+            "postprocess checks ALL rule outputs in the group."
+        )
+        assert "output/sample1_worker.txt" in transfer_output
+
+        # A remap must exist for every transferred output.
+        assert len(remaps) == len(transfer_output)
+
+    def test_temp_outputs_excluded_from_transfer(self):
+        """Test that temp() outputs are excluded from transfer_output_files.
+
+        temp() outputs are deleted by the EP during group execution after being
+        consumed by their downstream rule within the group.  If they appear in
+        transfer_output_files, HTCondor would error when it can't find the
+        already-deleted file at transfer time.
+        """
+        from unittest.mock import Mock
+
+        # Create a mock path object that has flags.temp = True
+        temp_path = Mock()
+        temp_path.__str__ = Mock(return_value="output/temp_intermediate.txt")
+        temp_path.flags = {"temp": True}
+
+        # Create individual jobs: one with a temp output, one with a normal output
+        temp_job = create_mock_individual_job(output_files=[temp_path])
+        normal_job = create_mock_individual_job(
+            output_files=["output/final_result.txt"]
+        )
+
+        group_job = create_mock_group_job(
+            [temp_job, normal_job],
+            external_outputs=["output/final_result.txt"],
+        )
+
+        _, transfer_output, remaps = self.executor._get_files_for_transfer(group_job)
+
+        # Normal output should be transferred
+        assert "output/final_result.txt" in transfer_output
+        # Temp output must NOT be transferred
+        assert "output/temp_intermediate.txt" not in transfer_output, (
+            "temp() outputs must be excluded — they are deleted on the EP "
+            "during group execution and cannot be transferred."
+        )
+        # Remaps should only cover non-temp outputs
+        assert len(remaps) == len(transfer_output)
