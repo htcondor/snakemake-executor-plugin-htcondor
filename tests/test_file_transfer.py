@@ -238,6 +238,7 @@ class TestScriptTransfer:
         self.executor.shared_fs_prefixes = []
         self.executor.workflow = Mock()
         self.executor.workflow.configfiles = []
+        self.executor.workflow.workdir_init = "/test/workdir"
         self.executor.get_snakefile = Mock(return_value="Snakefile")
 
         # Bind the actual methods to our mock
@@ -270,7 +271,7 @@ class TestScriptTransfer:
             self.job.params = {}
             self.job.format_wildcards = Mock(return_value=script_path)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             assert script_path in transfer_input
         finally:
@@ -289,7 +290,7 @@ class TestScriptTransfer:
             f.write("# test script")
 
         try:
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             self.job.format_wildcards.assert_called()
             assert "scripts/process_sample1.py" in transfer_input
@@ -313,7 +314,7 @@ class TestScriptTransfer:
             self.job.params = {}
             self.job.format_wildcards = Mock(return_value=script_path)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             # Full relative path must be preserved
             assert script_path in transfer_input
@@ -333,6 +334,7 @@ class TestNotebookTransfer:
         self.executor.shared_fs_prefixes = []
         self.executor.workflow = Mock()
         self.executor.workflow.configfiles = []
+        self.executor.workflow.workdir_init = "/test/workdir"
         self.executor.get_snakefile = Mock(return_value="Snakefile")
 
         # Bind the actual methods
@@ -365,7 +367,7 @@ class TestNotebookTransfer:
             self.job.params = {}
             self.job.format_wildcards = Mock(return_value=notebook_path)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             assert notebook_path in transfer_input
         finally:
@@ -382,6 +384,7 @@ class TestJobWrapperTransfer:
         self.executor.shared_fs_prefixes = []
         self.executor.workflow = Mock()
         self.executor.workflow.configfiles = []
+        self.executor.workflow.workdir_init = "/test/workdir"
         self.executor.get_snakefile = Mock(return_value="Snakefile")
 
         # Bind the actual methods
@@ -416,7 +419,7 @@ class TestJobWrapperTransfer:
             )
             self.job.rules = [self.job.rule]
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             assert wrapper_path in transfer_input
         finally:
@@ -438,7 +441,7 @@ class TestJobWrapperTransfer:
             )
             self.job.rules = [self.job.rule]
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             assert wrapper_path in transfer_input
         finally:
@@ -477,6 +480,7 @@ class TestCustomTransferResources:
         self.executor.shared_fs_prefixes = []
         self.executor.workflow = Mock()
         self.executor.workflow.configfiles = []
+        self.executor.workflow.workdir_init = "/test/workdir"
         self.executor.get_snakefile = Mock(return_value="Snakefile")
 
         # Bind the actual methods
@@ -521,7 +525,7 @@ class TestCustomTransferResources:
             self.job.params = {}
             self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             assert file1 in transfer_input
             assert file2 in transfer_input
@@ -551,7 +555,7 @@ class TestCustomTransferResources:
             self.job.params = {}
             self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             assert file1 in transfer_input
             assert file2 in transfer_input
@@ -580,7 +584,7 @@ class TestCustomTransferResources:
                 )
             )
 
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
             # Wildcard expansion SHOULD be called for individual jobs
             self.job.format_wildcards.assert_called()
@@ -604,10 +608,14 @@ class TestCustomTransferResources:
         self.job.params = {}
         self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
 
-        _, transfer_output = self.executor._get_files_for_transfer(self.job)
+        _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
+            self.job
+        )
 
         assert "results/model.pkl" in transfer_output
         assert "results/metrics.json" in transfer_output
+        # A remap must exist for every transferred output
+        assert len(transfer_remaps) == len(transfer_output)
 
     def test_htcondor_transfer_output_files_list(self):
         """Test htcondor_transfer_output_files with list."""
@@ -623,10 +631,14 @@ class TestCustomTransferResources:
         self.job.params = {}
         self.job.format_wildcards = Mock(side_effect=lambda path, **kwargs: path)
 
-        _, transfer_output = self.executor._get_files_for_transfer(self.job)
+        _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
+            self.job
+        )
 
         assert "results/model.pkl" in transfer_output
         assert "results/metrics.json" in transfer_output
+        # A remap must exist for every transferred output
+        assert len(transfer_remaps) == len(transfer_output)
 
 
 class TestFileTransferLogging:
@@ -639,6 +651,7 @@ class TestFileTransferLogging:
         self.executor.shared_fs_prefixes = []
         self.executor.workflow = Mock()
         self.executor.workflow.configfiles = []
+        self.executor.workflow.workdir_init = "/test/workdir"
         self.executor.get_snakefile = Mock(return_value="Snakefile")
 
         # Bind the actual method
