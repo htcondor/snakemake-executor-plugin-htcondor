@@ -115,9 +115,9 @@ snakemake --profile profile
 ### Expected Outputs
 
 ```
-prepared.txt
-part_a.txt
-part_b.txt
-part_c.txt
-final_results.txt
+results/prepared.txt
+results/part_a.txt
+results/part_b.txt
+results/part_c.txt
+results/final_results.txt
 ```

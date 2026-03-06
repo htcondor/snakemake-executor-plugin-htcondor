@@ -26,7 +26,7 @@ mamba activate snakemake-env
 
 # Or using conda
 conda env create -f env.yaml
-conda activae snakemake-env
+conda activate snakemake-env
 ```
 
 ## How to Run
@@ -34,7 +34,8 @@ conda activae snakemake-env
 Each example contains a profile/ directory with HTCondor executor settings. Navigate to any example folder and run:
 
 ```bash
-cd examples/<example-name> snakemake --profile profile
+cd examples/<example-name>
+snakemake --profile profile
 ```
 
 The example on the `partially-shared filesystem` is not runnable. However, the README.md in the folder has useful information about this system and how you can set up an example to see how it works.
