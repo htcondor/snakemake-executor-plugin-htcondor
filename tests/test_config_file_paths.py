@@ -504,7 +504,7 @@ class TestFilesystemModes:
         - Arguments should remain unchanged (absolute paths are fine)
         - Transfer lists should be empty
         """
-        job_exec, job_args, transfer_in, transfer_out = (
+        job_exec, job_args, transfer_in, transfer_out, *_ = (
             self.executor._get_exec_args_and_transfer_files(
                 self.job, needs_transfer=False
             )
@@ -535,7 +535,7 @@ class TestFilesystemModes:
             "/home/user/project/nested/config.yaml",
         ]
 
-        job_exec, job_args, transfer_in, transfer_out = (
+        job_exec, job_args, transfer_in, transfer_out, *_ = (
             self.executor._get_exec_args_and_transfer_files(
                 self.job, needs_transfer=True
             )
@@ -566,7 +566,7 @@ class TestFilesystemModes:
             return_value="python -m snakemake --configfiles /home/user/project/local_config.yaml /staging/shared_config.yaml --cores 1"
         )
 
-        job_exec, job_args, transfer_in, transfer_out = (
+        job_exec, job_args, transfer_in, transfer_out, *_ = (
             self.executor._get_exec_args_and_transfer_files(
                 self.job, needs_transfer=True
             )

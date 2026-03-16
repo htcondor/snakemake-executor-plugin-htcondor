@@ -21,6 +21,7 @@ def create_mock_executor(shared_fs_prefixes=None):
     executor.shared_fs_prefixes = shared_fs_prefixes or []
     executor.workflow = Mock()
     executor.workflow.configfiles = []
+    executor.workflow.workdir_init = "/test/workdir"
     executor.get_snakefile = Mock(return_value="Snakefile")
 
     # Bind the actual methods to the mock
@@ -112,6 +113,7 @@ def create_mock_individual_job(
 
 def create_mock_group_job(
     individual_jobs,
+    external_outputs=None,
     htcondor_transfer_input_files=None,
     htcondor_transfer_output_files=None,
 ):
@@ -120,6 +122,11 @@ def create_mock_group_job(
 
     Args:
         individual_jobs: List of mock individual jobs to include in the group
+        external_outputs: List of output file paths that are consumed by rules
+            outside the group.  In real Snakemake, GroupJob.output only contains
+            these external outputs — internal intermediates are NOT included.
+            The executor must collect all outputs from job.jobs to discover
+            internal intermediates.  Defaults to an empty list.
         htcondor_transfer_input_files: Additional input files from resource
         htcondor_transfer_output_files: Additional output files from resource
 
@@ -132,12 +139,18 @@ def create_mock_group_job(
     job.jobs = individual_jobs
     job.name = "test_group_job"
 
-    # Combine input/output from all jobs
+    # Aggregate inputs from all individual jobs (the executor does not use
+    # job.input for group jobs, but we populate it for completeness).
     job.input = []
-    job.output = []
     for individual_job in individual_jobs:
         job.input.extend(individual_job.input)
-        job.output.extend(individual_job.output)
+
+    # In real Snakemake, GroupJob.output contains only the outputs consumed by
+    # rules OUTSIDE the group.  Internal intermediates are accessible only via
+    # job.jobs[*].output.  If the caller doesn't specify external_outputs, the
+    # mock defaults to an empty list — exactly the worst case the executor must
+    # handle correctly.
+    job.output = external_outputs if external_outputs is not None else []
 
     # Setup resources
     def resource_get(key, default=None):

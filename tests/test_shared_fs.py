@@ -124,6 +124,7 @@ class TestGetFilesForTransfer:
         self.executor.shared_fs_prefixes = ["/staging", "/shared/"]
         self.executor.workflow = Mock()
         self.executor.workflow.configfiles = []
+        self.executor.workflow.workdir_init = "/home/user/workflow"
         self.executor.get_snakefile = Mock(return_value="/home/user/Snakefile")
 
         # Bind the actual methods to our mock
@@ -152,7 +153,7 @@ class TestGetFilesForTransfer:
 
     def test_snakefile_not_on_shared_fs(self):
         """Test that Snakefile not on shared FS is included in transfer."""
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "/home/user/Snakefile" in transfer_input
 
@@ -160,7 +161,7 @@ class TestGetFilesForTransfer:
         """Test that Snakefile on shared FS is excluded from transfer."""
         self.executor.get_snakefile = Mock(return_value="/staging/user/Snakefile")
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "/staging/user/Snakefile" not in transfer_input
 
@@ -174,7 +175,7 @@ class TestGetFilesForTransfer:
         # Use a relative path in a subdirectory
         self.executor.get_snakefile = Mock(return_value="workflow/Snakefile")
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         # Full relative path must be preserved, not just basename
         assert "workflow/Snakefile" in transfer_input
@@ -187,7 +188,7 @@ class TestGetFilesForTransfer:
             return_value="project/workflow/rules/Snakefile"
         )
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "project/workflow/rules/Snakefile" in transfer_input
 
@@ -206,29 +207,50 @@ class TestGetFilesForTransfer:
             )
         )
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
-
-        # Local and home files should be transferred
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
         assert "input/local-file.txt" in transfer_input
         assert "/home/user/another-file.txt" in transfer_input
 
         # Staging file should not be transferred
         assert "/staging/user/shared-file.txt" not in transfer_input
 
-    def test_output_files_top_level_dirs(self):
-        """Test that only top-level output directories are transferred."""
+    def test_output_explicit_files_transferred(self):
+        """Test that explicit output files are transferred, not top-level directories.
+
+        This is a regression test for the mtime bug: when a rule's inputs and
+        outputs share a directory (e.g. rule 1 writes to output/ and rule 2
+        reads *and* writes to output/), transferring the entire top-level
+        directory back to the AP touches the input files and breaks Snakemake's
+        mtime-based dependency tracking.  The fix is to transfer only the files
+        explicitly declared in job.output.
+        """
         self.job.output = [
             "output/results/data.txt",
             "output/logs/job.log",
             "/staging/shared-output/result.txt",
         ]
 
-        _, transfer_output = self.executor._get_files_for_transfer(self.job)
+        _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
+            self.job
+        )
 
-        # Only 'output' directory should be in transfer (staging excluded)
-        assert "output" in transfer_output
-        assert len([f for f in transfer_output if f == "output"]) == 1
+        # Explicit files should be transferred (not the parent directory)
+        assert "output/results/data.txt" in transfer_output
+        assert "output/logs/job.log" in transfer_output
+        # Top-level directory must NOT be in the list
+        assert "output" not in transfer_output
+        # Shared-FS file must not be transferred
         assert "/staging/shared-output/result.txt" not in transfer_output
+
+        # Remaps must exist for each relative output file
+        assert any("output/results/data.txt" in r for r in transfer_remaps)
+        assert any("output/logs/job.log" in r for r in transfer_remaps)
+        # The remap destination must be absolute
+        for remap in transfer_remaps:
+            dest = remap.split(" = ")[1].strip()
+            assert dest.startswith(
+                "/"
+            ), f"Remap destination should be absolute: {remap}"
 
     def test_config_files_not_handled_here(self):
         """Test that config files are NOT handled by _get_files_for_transfer.
@@ -241,22 +263,21 @@ class TestGetFilesForTransfer:
             "/staging/shared-config.yaml",
         ]
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
-
-        # Config files should NOT be in the transfer list from this method
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
         # They are handled by _prepare_config_files_for_transfer() instead
         assert "/home/user/config.yaml" not in transfer_input
         assert "/staging/shared-config.yaml" not in transfer_input
 
     def test_empty_job(self):
         """Test handling of job with no inputs or outputs."""
-        transfer_input, transfer_output = self.executor._get_files_for_transfer(
-            self.job
+        transfer_input, transfer_output, transfer_remaps = (
+            self.executor._get_files_for_transfer(self.job)
         )
 
         # Should only have Snakefile
         assert len(transfer_input) == 1
         assert transfer_output == []
+        assert transfer_remaps == []
 
     def test_script_file_included_in_transfer(self):
         """Test that script files from script: directive are transferred."""
@@ -269,7 +290,7 @@ class TestGetFilesForTransfer:
 
         # Mock exists to avoid warnings about non-existent test files
         with patch("snakemake_executor_plugin_htcondor.exists", return_value=True):
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "scripts/process.py" in transfer_input
 
@@ -284,7 +305,7 @@ class TestGetFilesForTransfer:
 
         # Mock exists to avoid warnings about non-existent test files
         with patch("snakemake_executor_plugin_htcondor.exists", return_value=True):
-            transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "notebooks/analysis.ipynb" in transfer_input
 
@@ -297,7 +318,7 @@ class TestGetFilesForTransfer:
         self.job.params = {}
         self.job.format_wildcards = Mock(return_value="/staging/scripts/process.py")
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "/staging/scripts/process.py" not in transfer_input
 
@@ -325,7 +346,7 @@ class TestGetFilesForTransfer:
             self.executor, Executor
         )
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "helpers/module1.py" in transfer_input
         assert "helpers/module2.py" in transfer_input
@@ -354,10 +375,14 @@ class TestGetFilesForTransfer:
             self.executor, Executor
         )
 
-        _, transfer_output = self.executor._get_files_for_transfer(self.job)
+        _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
+            self.job
+        )
 
         assert "results/model.pkl" in transfer_output
         assert "results/metrics.json" in transfer_output
+        # A remap must exist for every transferred output
+        assert len(transfer_remaps) == len(transfer_output)
 
     def test_job_wrapper_included_in_transfer(self):
         """Test that job_wrapper resource is explicitly transferred."""
@@ -375,7 +400,7 @@ class TestGetFilesForTransfer:
 
         self.job.resources.get = Mock(side_effect=mock_get)
 
-        transfer_input, _ = self.executor._get_files_for_transfer(self.job)
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
 
         assert "workflow/wrapper.sh" in transfer_input
 
