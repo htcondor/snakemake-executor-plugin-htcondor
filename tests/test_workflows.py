@@ -1,4 +1,4 @@
-from typing import Optional, Mapping
+from typing import Optional, Mapping, List
 import snakemake.common.tests
 from snakemake_interface_executor_plugins.settings import ExecutorSettingsBase
 from snakemake_interface_common.plugin_registry.plugin import TaggedSettings
@@ -9,6 +9,10 @@ from snakemake_executor_plugin_htcondor import ExecutorSettings
 # https://github.com/snakemake/snakemake/blob/main/src/snakemake/common/tests/__init__.py
 class TestWorkflowsBase(snakemake.common.tests.TestWorkflowsBase):
     __test__ = True
+
+    # override the get_envvars() to include "PATH"
+    def get_envvars(self) -> List[str]:
+        return ["PATH"]
 
     def get_executor(self) -> str:
         return "htcondor"
