@@ -6,7 +6,7 @@ from snakemake_executor_plugin_htcondor import ExecutorSettings
 
 
 # Check out the base classes found here for all possible options and methods:
-# https://github.com/snakemake/snakemake/blob/main/snakemake/common/tests/__init__.py
+# https://github.com/snakemake/snakemake/blob/main/src/snakemake/common/tests/__init__.py
 class TestWorkflowsBase(snakemake.common.tests.TestWorkflowsBase):
     __test__ = True
 
