@@ -1,0 +1,44 @@
+name: Create prerelease on tag
+
+# When a vX.Y.Z tag is pushed, automatically create a GitHub prerelease.
+# This triggers the `prereleased` event in pypi-publish.yml → TestPyPI.
+# To publish to real PyPI, go to the Releases page and mark it as a full release,
+# which fires the `published` event in pypi-publish.yml → PyPI.
+#
+# The tag filter is a two-layer check:
+#   1. Glob (GitHub): requires vN.N.N* shape, rejecting tags like `vabc` or `v1`
+#   2. Regex (job step): enforces full PEP 440 compliance before anything is created
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+jobs:
+  create-prerelease:
+    name: Create GitHub prerelease
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Validate tag is a PEP 440 version
+        run: |
+          python3 -c "
+          import re, sys
+          tag = '${{ github.ref_name }}'
+          version = tag.lstrip('v')
+          pattern = r'^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}((a|b|rc)(0|[1-9][0-9]*))?(\.(post|dev)(0|[1-9][0-9]*))*$'
+          if not re.fullmatch(pattern, version):
+              print(f'ERROR: {tag!r} is not a valid PEP 440 version tag')
+              sys.exit(1)
+          print(f'{tag!r} is a valid PEP 440 version tag')
+          "
+
+      - name: Create prerelease from tag
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --prerelease \
+            --generate-notes \
+            --title "${{ github.ref_name }}"
