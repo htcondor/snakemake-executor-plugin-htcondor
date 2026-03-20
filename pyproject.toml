@@ -22,6 +22,10 @@ snakemake-interface-common = "^1.17.1"
 snakemake-interface-executor-plugins = "^9.0.0"
 htcondor = "^24.5.1"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires a running HTCondor AP (submits real jobs)"]
+
 [tool.poetry.group.dev.dependencies]
 black = "^24.2.0"
 flake8 = "^7.0.0"
