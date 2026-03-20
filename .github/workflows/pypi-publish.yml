@@ -28,7 +28,7 @@ jobs:
         run: python3 -m pip install build poetry-dynamic-versioning --user
 
       - name: Build wheel and source tarball
-        run: python3 -m build
+        run: python3 -m build --no-isolation
 
       - name: Upload built distributions as artifact
         uses: actions/upload-artifact@v4
