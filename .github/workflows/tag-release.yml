@@ -69,6 +69,9 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Install build frontend
+        run: python3 -m pip install build
+
       - name: Build wheel and source tarball
         run: python3 -m build
 
