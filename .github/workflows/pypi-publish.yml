@@ -25,7 +25,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install build frontend
-        run: python3 -m pip install build poetry-dynamic-versioning --user
+        run: python3 -m pip install build poetry-core poetry-dynamic-versioning --user
 
       - name: Build wheel and source tarball
         run: python3 -m build --no-isolation
