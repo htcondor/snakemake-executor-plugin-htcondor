@@ -1,10 +1,15 @@
 [build-system]
-requires = [ "poetry-core",]
-build-backend = "poetry.core.masonry.api"
+requires = [ "poetry-core", "poetry-dynamic-versioning>=1.0.0,<2.0.0",]
+build-backend = "poetry-dynamic-versioning.backend"
+
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"
+style = "pep440"
 
 [tool.poetry]
 name = "snakemake-executor-plugin-htcondor"
-version = "0.2.0"
+version = "0.0.0"
 description = "A Snakemake executor plugin for submitting jobs to an HTCondor cluster."
 authors = [ "Jannis Speer <jannis.speer@tutanota.com>", "Justin Hiemstra <jhiemstra@wisc.edu>",]
 readme = "README.md"

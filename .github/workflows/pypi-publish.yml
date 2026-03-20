@@ -1,0 +1,85 @@
+name: Publish to PyPI
+
+# Triggers:
+#   - GitHub Release published (not a prerelease) → publishes to real PyPI
+#   - GitHub Release marked as prerelease       → publishes to TestPyPI only
+#
+# Version is derived automatically from the git tag via poetry-dynamic-versioning.
+# The `version` field in pyproject.toml is a placeholder and does not need to be updated.
+on:
+  release:
+    types:
+      - published    # fires for both full releases and prereleases; job-level `if:` conditions route accordingly
+
+jobs:
+  # ── Step 1: build the sdist + wheel ─────────────────────────────────────────
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history required for poetry-dynamic-versioning to read tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install build frontend
+        run: python3 -m pip install build poetry-dynamic-versioning --user
+
+      - name: Build wheel and source tarball
+        run: python3 -m build
+
+      - name: Upload built distributions as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  # ── Step 2a: publish full releases to PyPI ──────────────────────────────────
+  publish-to-pypi:
+    name: Publish to PyPI
+    # Only run for non-prerelease GitHub Releases
+    if: "!github.event.release.prerelease"
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/snakemake-executor-plugin-htcondor
+    permissions:
+      id-token: write  # required for OIDC trusted publishing
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ── Step 2b: publish prereleases to TestPyPI ────────────────────────────────
+  publish-to-testpypi:
+    name: Publish to TestPyPI
+    # Only run for prerelease GitHub Releases
+    if: github.event.release.prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/snakemake-executor-plugin-htcondor
+    permissions:
+      id-token: write  # required for OIDC trusted publishing
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
