@@ -9,8 +9,7 @@ name: Publish to PyPI
 on:
   release:
     types:
-      - published    # covers both full releases and prereleases; jobs below
-      - prereleased  # filter individually with `if:` conditions
+      - published    # fires for both full releases and prereleases; job-level `if:` conditions route accordingly
 
 jobs:
   # ── Step 1: build the sdist + wheel ─────────────────────────────────────────
