@@ -7,7 +7,7 @@ name: Create prerelease on tag
 #
 # The tag filter is a two-layer check:
 #   1. Glob (GitHub): requires vN.N.N* shape, rejecting tags like `vabc` or `v1`
-#   2. Regex (job step): enforces full PEP 440 compliance before anything is created
+#   2. Regex (job step): enforces a strict subset of PEP 440 (vN.N.N with optional pre/post/dev) before anything is created
 on:
   push:
     tags:
