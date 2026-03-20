@@ -1,24 +1,27 @@
-name: Create prerelease on tag
+name: Tag → prerelease → TestPyPI
 
-# When a vX.Y.Z tag is pushed, automatically create a GitHub prerelease.
-# This triggers the `prereleased` event in pypi-publish.yml → TestPyPI.
-# To publish to real PyPI, go to the Releases page and mark it as a full release,
-# which fires the `published` event in pypi-publish.yml → PyPI.
+# When a vX.Y.Z tag is pushed:
+#   1. Validate it against a strict PEP 440 subset
+#   2. Create a GitHub prerelease
+#   3. Build the package and publish to TestPyPI
+#
+# To publish to real PyPI, go to the Releases page and mark the prerelease as a
+# full release — this fires the `released` event picked up by pypi-publish.yml.
 #
 # The tag filter is a two-layer check:
 #   1. Glob (GitHub): requires vN.N.N* shape, rejecting tags like `vabc` or `v1`
-#   2. Regex (job step): enforces a strict subset of PEP 440 (vN.N.N with optional pre/post/dev) before anything is created
+#   2. Regex (job step): enforces a strict subset of PEP 440 (vN.N.N with
+#      optional pre/post/dev) before anything is created
 on:
   push:
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
 
 jobs:
-  create-prerelease:
-    name: Create GitHub prerelease
+  # ── Validate the tag ────────────────────────────────────────────────────────
+  validate-tag:
+    name: Validate tag
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Validate tag is a PEP 440 version
         run: |
@@ -33,6 +36,14 @@ jobs:
           print(f'{tag!r} is a valid PEP 440 version tag')
           "
 
+  # ── Create the GitHub prerelease ────────────────────────────────────────────
+  create-prerelease:
+    name: Create GitHub prerelease
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Create prerelease from tag
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -42,3 +53,52 @@ jobs:
             --prerelease \
             --generate-notes \
             --title "${{ github.ref_name }}"
+
+  # ── Build the sdist + wheel ─────────────────────────────────────────────────
+  build:
+    name: Build distribution
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history needed for poetry-dynamic-versioning
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install build frontend
+        run: python3 -m pip install build poetry-dynamic-versioning --user
+
+      - name: Build wheel and source tarball
+        run: python3 -m build
+
+      - name: Upload built distributions as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  # ── Publish to TestPyPI ─────────────────────────────────────────────────────
+  publish-to-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/snakemake-executor-plugin-htcondor
+    permissions:
+      id-token: write  # required for OIDC trusted publishing
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

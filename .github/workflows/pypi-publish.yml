@@ -1,18 +1,16 @@
 name: Publish to PyPI
 
-# Triggers:
-#   - GitHub Release published (not a prerelease) → publishes to real PyPI
-#   - GitHub Release marked as prerelease       → publishes to TestPyPI only
+# Triggers when a GitHub prerelease is promoted to a full release.
 #
 # Version is derived automatically from the git tag via poetry-dynamic-versioning.
 # The `version` field in pyproject.toml is a placeholder and does not need to be updated.
 on:
   release:
     types:
-      - published    # fires for both full releases and prereleases; job-level `if:` conditions route accordingly
+      - released  # fires when a prerelease is promoted to a full release
 
 jobs:
-  # ── Step 1: build the sdist + wheel ─────────────────────────────────────────
+  # ── Build the sdist + wheel ─────────────────────────────────────────────────
   build:
     name: Build distribution
     runs-on: ubuntu-latest
@@ -38,11 +36,9 @@ jobs:
           name: python-package-distributions
           path: dist/
 
-  # ── Step 2a: publish full releases to PyPI ──────────────────────────────────
+  # ── Publish to PyPI ─────────────────────────────────────────────────────────
   publish-to-pypi:
     name: Publish to PyPI
-    # Only run for non-prerelease GitHub Releases
-    if: "!github.event.release.prerelease"
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -59,27 +55,3 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-
-  # ── Step 2b: publish prereleases to TestPyPI ────────────────────────────────
-  publish-to-testpypi:
-    name: Publish to TestPyPI
-    # Only run for prerelease GitHub Releases
-    if: github.event.release.prerelease
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/snakemake-executor-plugin-htcondor
-    permissions:
-      id-token: write  # required for OIDC trusted publishing
-    steps:
-      - name: Download built distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: python-package-distributions
-          path: dist/
-
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
