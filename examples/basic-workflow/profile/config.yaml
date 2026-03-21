@@ -1,0 +1,38 @@
+# Default configuration for the HTCondor executor profile. Each of these values
+# can also be passed via command line flags, e.g. `--jobs 30 --executor htcondor`.
+# However, putting them here allows you to avoid needing to specify them every time.
+
+# 'jobs' specifies the maximum number of HTCondor jobs that can be in the queue at once.
+# These come from individual Snakemake workflow "steps", which are a "rule" applied to a
+# specific set of input files.
+jobs: 2
+
+# Tell Snakemake to use the HTCondor executor plugin (the executor must be installed ahead
+# of time).
+executor: htcondor
+
+shared-fs-usage: none
+
+# Default resources will apply to all workflow steps. If a single workflow step fails due
+# to insufficient resources, it can be re-run with modified values. Snakemake will handle
+# picking up where it left off, and won't re-run steps that have already completed.
+default-resources:
+  # Required for the executor
+  job_wrapper: "wrapper.sh"
+  container_image: "'docker://jhiemstra/snakemake-dev-image:v1'"
+  universe: "container"
+
+  # Using values that are needlessly larger than necessary for your jobs can lead to longer
+  # queue wait times and lower throughput. Reference the `.log` files produced by HTCondor
+  # to see exactly what resources were used by your jobs for fine-tuning.
+  request_disk: "4GB"
+  request_memory: "1GB"
+  # Tell HTCondor how many CPUs your job needs (this correlate's to HTCondor's `request_cpus` parameter).
+  threads: 1
+
+  # You can request additional types of resources as needed, e.g.
+  # request_gpus: 1
+  # gpus_minimum_memory: 40GB
+  #
+  # The resource types currently supported by the HTCondor Snakemake executor plugin are discussed
+  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/docs/further.md

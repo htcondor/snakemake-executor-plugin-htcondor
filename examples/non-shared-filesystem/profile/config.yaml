@@ -1,0 +1,29 @@
+jobs: 2
+
+executor: htcondor
+
+# Indicate to the plugin that jobs running on various EPs do not share a filesystem with
+# each other, or with the AP.
+shared-fs-usage: none
+
+default-resources:
+  job_wrapper: "wrapper.sh" #required
+  preserve_relative_paths: true
+
+  # Specify your EP container image and the corresponding HTCondor universe to use.
+  #
+  # Note requirement for quotes around the image name
+  # Put your own image here if you'd like to use a different one.
+  container_image: "'docker://jhiemstra/snakemake-dev-image:v1'"
+  universe: "container"
+
+  request_disk: "4GB"
+  request_memory: "1GB"
+  threads: 1
+
+  # You can request additional types of resources as needed, e.g.
+  # request_gqus: 1
+  # gpus_minimum_memory: 40GB
+  #
+  # The resource types currently supported by the HTCondor Snakemake executor plugin are discussed
+  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/docs/further.md

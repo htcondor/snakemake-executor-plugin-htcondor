@@ -1,0 +1,27 @@
+SAMPLES = ['sample1', 'sample2']
+
+rule all:
+    input:
+        expand("results/output_{sample}.txt", sample=SAMPLES)
+
+rule make_intermediary:
+    input:
+        "inputs/{sample}.txt"
+    output:
+        "results/intermediary_{sample}.txt"
+    shell:
+        """
+        cat {input} > {output}
+        echo "foo" >> {output}
+        """
+
+rule make_output:
+    input:
+        "results/intermediary_{sample}.txt"
+    output:
+        "results/output_{sample}.txt"
+    shell:
+        """
+        cat {input} > {output}
+        echo "bar" >> {output}
+        """
