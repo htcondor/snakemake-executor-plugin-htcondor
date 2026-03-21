@@ -2,47 +2,31 @@
 
 A simple example demonstrating basic HTCondor job submission with resource requests.
 
-The following [submit description file commands](https://htcondor.readthedocs.io/en/latest/man-pages/condor_submit.html) are supported (add them as user-defined resources):
-| Basic | Matchmaking | Matchmaking (GPU) | Policy |
-| ---------------------------------- | ---------------- | ------------------------- | -------------------------- |
-| `getenv` | `rank` | `request_gpus` | `max_retries` |
-| `environment` | `request_disk` | `require_gpus` | `allowed_execute_duration` |
-| `input` | `request_memory` | `gpus_minimum_capability` | `allowed_job_duration` |
-| `max_materialize` | `requirements` | `gpus_minimum_memory` | `retry_until` |
-| `max_idle` | `classad_<foo>`**| `gpus_minimum_runtime` | |
-| `job_wrapper`\* | | `cuda_version` | |
-| `universe` | | | |
-| `htcondor_transfer_input_files`**\* | | | |
-| `htcondor_transfer_output_files`\*\*\*| | | |
-
-Additionally, the following **executor-specific resources** are available with explicit units (see [Resources with Explicit Units](#resources-with-explicit-units) below):
-| Resource | Description | Equivalent HTCondor Command |
-| ----------------------------- | ------------------------------------- | --------------------------- |
-| `htcondor_request_mem_mb` | Request memory in MB | `request_memory` |
-| `htcondor_request_disk_mb` | Request disk in MB | `request_disk` |
-| `htcondor_gpus_min_mem_mb` | GPU minimum memory in MB | `gpus_minimum_memory` |
-
-\*\* Custom ClassAds can be defined using the `classad_` prefix as a custom job resource. For example, to define the ClassAd `+MyClassAd`, define `classad_MyClassAd` in
-the job's resources.
-
-\*\*\* Additional input or output files for transfer can be specified using `htcondor_transfer_input_files` and `htcondor_transfer_output_files` resources.
-These are useful for transferring files that aren't part of the rule's `input:`/`output:` directives (e.g., helper scripts, configuration files, logs, intermediate results).
-Supports both string (comma-separated) and list formats. Wildcards (e.g., `{sample}`) are expanded for individual jobs, but **not** for grouped jobs since the resources are defined at the group level.
-Files on shared filesystem prefixes are automatically excluded from transfer.
-
-Example usage:
-
-```python
-rule process:
-    input: "data/{sample}.txt"
-    output: "results/{sample}.out"
-    resources:
-        htcondor_transfer_input_files="scripts/helpers.py,config/params.yaml",
-        htcondor_transfer_output_files="logs/{sample}.log"
-    script: "scripts/process.py"
-```
+Find out more about plugin's resources and configuration under ["Basic"](https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/README.md) from the official executor's GitHub repository.
 
 ## How This Example Works
+
+This example runs a simple Snakemake's rule called `process` that transforms the the input contents (i.e: `sample1.txt` and `sample2.txt`) to outputs by replacing the string `input` in the each `.txt` with the string `output`.
+
+### Snakefile's Structure
+
+- Line 1: `SAMPLES = ["sample1", "sample2"]` defines the set of sample names the workflow should run on.
+- Line 3: `rule all` specifies target rule, which is what our final goals (output files) are for running the entire workflow
+- Line 7: `rule process` does the actual processing of our data, specifying the input files, output files, and the shell command to generate the outputs from the inputs. This is the standard specifications for a rule in Snakemake.
+
+### Log files
+
+**HTCondor**
+In `.snakemake`, you can find `htcondor` directory that contains `.err`, `.log`, and `.out` files. Each rule in a Snakefile generally produces a set of files (`.err`, `.log`, `.out`), with some exceptions such as that of grouped job.
+
+- `.log` records significant events that occur during the lifetime of all jobs within a cluster. This is important in helping us understanding what happened to a job and diagnosing if any issues occurred while the job was running/trying to run.
+- `.err` is the standard error, which typically contains the error messages.
+- `.out` is the standard output. Instead of printing to the console, all the outputs that would have printed in the console normally would be redirected here instead.
+
+**Snakemake**
+In addition to the HTCondor log, we also have the Snakemake's log file which can be found in `log` directory under `.snakemake`. The contents in the file is also printed to `Terminal`. This file contains the setups, job execution details and progress, warnings/errors, final status, and more. These are useful for understanding, troubleshooting, and inspecting the workflow that is being run.
+
+### Plugin's Resources Used
 
 Resources are set as **default-resources** in `profile/config.yaml`
 

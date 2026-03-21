@@ -13,15 +13,6 @@ executor: htcondor
 
 shared-fs-usage: none
 
-# Distributed, heterogeneous computational environments are a wild place where strange things
-# can happen. If something goes wrong, try again up to N times. After that, we assume there's
-# a real error that requires user/admin intervention.
-#
-# Please be responsible setting this number!!! Excessive retries are bad for the system and
-# your own throughput because they count against your fairshare quotas on the system. You don't
-# want to keep blindly retrying a workflow that always fails.
-retries: 3
-
 # Default resources will apply to all workflow steps. If a single workflow step fails due
 # to insufficient resources, it can be re-run with modified values. Snakemake will handle
 # picking up where it left off, and won't re-run steps that have already completed.

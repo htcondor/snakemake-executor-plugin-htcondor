@@ -4,8 +4,6 @@ executor: htcondor
 
 shared-fs-usage: none
 
-retries: 3
-
 default-resources:
   # This is the HTCondor job wrapper script that gets used to launch each job on the EP.
   # At a high level it starts up a Snakemake instance on each EP.

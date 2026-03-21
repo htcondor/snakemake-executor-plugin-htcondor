@@ -11,7 +11,7 @@ In some computing environments, the Access Point and Execution Points may share 
 This is different from:
 
 - **Fully shared filesystem:** all paths are accessible everywhere, no file transfer needed
-- **Non-shared filesystem:** nothing is shared, HTCondor must transfer everything
+- **Non shared filesystem:** nothing is shared, HTCondor must transfer everything
 
 ## How to Configure
 

@@ -4,8 +4,6 @@ executor: htcondor
 
 shared-fs-usage: none
 
-retries: 3
-
 default-resources:
   # Required for the executor
   job_wrapper: "wrapper.sh"

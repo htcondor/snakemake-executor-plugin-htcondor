@@ -49,7 +49,7 @@ Snakemake automatically generates a job script for each rule execution. The job 
 
 ## How This Example Works
 
-This example runs a simple three-step pipeline that processes two samples (`sample1.txt`, `sample2.txt`) through a series of rules:
+This example runs a simple two-step pipeline that processes two samples (`sample1.txt`, `sample2.txt`) through a series of rules:
 
 1. **`make_intermediary`** — Processes each input file, appending `"foo"`
    to produce `results/intermediary_{sample}.txt`

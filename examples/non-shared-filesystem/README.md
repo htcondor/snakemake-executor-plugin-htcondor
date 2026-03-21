@@ -47,17 +47,11 @@ A path like `../../my_data/` has no equivalent structure to preserve on the EP.
 
 ## How This Example Works
 
-This example runs the same two-step pipeline from the job wrapper example, but configured for a non-shared filesystem. It processes two pre-created input files through two rules:
+This example runs the same two-step pipeline from the job wrapper example. It processes two pre-created input files through two rules:
 
 - **`make_intermediary`** — Copies each input file and appends `"foo"` to
   produce `results/intermediary_{sample}.txt`
 - **`make_output`** — Copies each intermediary file and appends `"bar"` to produce the final `results/output_{sample}.txt`
-
-Unlike the job wrapper example, input files (`inputs/sample1.txt`,
-`inputs/sample2.txt`) are pre-created and committed alongside the example.
-This is required because HTCondor must transfer input files from the AP to
-each EP before the job runs — they cannot be created as part of the workflow
-itself.
 
 The profile sets `shared-fs-usage: none` to activate HTCondor's file transfer
 mechanism, and `preserve_relative_paths: True` to ensure directory structure

@@ -6,8 +6,6 @@ executor: htcondor
 # each other, or with the AP.
 shared-fs-usage: none
 
-retries: 3
-
 default-resources:
   job_wrapper: "wrapper.sh" #required
   preserve_relative_paths: true
