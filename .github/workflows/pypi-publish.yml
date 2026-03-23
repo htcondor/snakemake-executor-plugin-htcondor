@@ -1,0 +1,57 @@
+name: Publish to PyPI
+
+# Triggers when a GitHub prerelease is promoted to a full release.
+#
+# Version is derived automatically from the git tag via poetry-dynamic-versioning.
+# The `version` field in pyproject.toml is a placeholder and does not need to be updated.
+on:
+  release:
+    types:
+      - released  # fires when a prerelease is promoted to a full release
+
+jobs:
+  # ── Build the sdist + wheel ─────────────────────────────────────────────────
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history required for poetry-dynamic-versioning to read tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install build frontend
+        run: python3 -m pip install build
+
+      - name: Build wheel and source tarball
+        run: python3 -m build
+
+      - name: Upload built distributions as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  # ── Publish to PyPI ─────────────────────────────────────────────────────────
+  publish-to-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/snakemake-executor-plugin-htcondor
+    permissions:
+      id-token: write  # required for OIDC trusted publishing
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
