@@ -1,4 +1,4 @@
-from typing import Optional, Mapping
+from typing import Optional, Mapping, List
 import pytest
 import snakemake.common.tests
 from snakemake_interface_executor_plugins.settings import ExecutorSettingsBase
@@ -7,10 +7,14 @@ from snakemake_executor_plugin_htcondor import ExecutorSettings
 
 
 # Check out the base classes found here for all possible options and methods:
-# https://github.com/snakemake/snakemake/blob/main/snakemake/common/tests/__init__.py
+# https://github.com/snakemake/snakemake/blob/main/src/snakemake/common/tests/__init__.py
 @pytest.mark.integration
 class TestWorkflowsBase(snakemake.common.tests.TestWorkflowsBase):
     __test__ = True
+
+    # override the get_envvars() to include "PATH"
+    def get_envvars(self) -> List[str]:
+        return ["PATH"]
 
     def get_executor(self) -> str:
         return "htcondor"
