@@ -1,0 +1,13 @@
+SAMPLES = ["sample1", "sample2"]
+
+rule all:
+    input:
+        expand("results/{sample}.txt", sample=SAMPLES)
+
+rule process:
+    input:
+        "inputs/{sample}.txt"
+    output:
+        "results/{sample}.txt"
+    shell:
+        "sed 's/input/output/g' {input} > {output}"
