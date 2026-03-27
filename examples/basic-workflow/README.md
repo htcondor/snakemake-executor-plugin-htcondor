@@ -6,7 +6,7 @@ Find out more about plugin's resources and configuration under ["Basic"](https:/
 
 ## How This Example Works
 
-This example runs a simple Snakemake's rule called `process` that transforms the the input contents (i.e: `sample1.txt` and `sample2.txt`) to outputs by replacing the string `input` in the each `.txt` with the string `output`.
+This example runs a simple Snakemake's rule called `process` that transforms the input contents (i.e., `sample1.txt` and `sample2.txt`) to outputs by replacing the string `input` in each `.txt` file with the string `output`.
 
 ### Snakefile's Structure
 
