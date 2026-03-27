@@ -20,8 +20,10 @@ This example runs a simple Snakemake's rule called `process` that transforms the
 In `.snakemake`, you can find `htcondor` directory that contains `.err`, `.log`, and `.out` files. Each rule in a Snakefile generally produces a set of files (`.err`, `.log`, `.out`), with some exceptions such as that of grouped job.
 
 - `.log` records significant events that occur during the lifetime of all jobs within a cluster. This is important to help us understand what happened to a job and to diagnose if any issues occurred while the job was running/trying to run.
-- `.err` is the standard error, which typically contains the error messages.
-- `.out` is the standard output. Instead of printing to the console, all the outputs that would have printed in the console normally would be redirected here instead.
+- `.out` is the standard output, which records "normal" messages.
+- `.err` is the standard error. which records error messages or additional information.
+
+> All the outputs that would normally have been printed in the console are instead redirected to the appropriate `.out` or `.err` file.
 
 **Snakemake**
 In addition to the HTCondor log, we also have the Snakemake's log file which can be found in `log` directory under `.snakemake`. The contents in the file is also printed to `Terminal`. This file contains the setups, job execution details and progress, warnings/errors, final status, and more. These are useful for understanding, troubleshooting, and inspecting the workflow that is being run.
