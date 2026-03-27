@@ -14,7 +14,7 @@ The job wrapper solves this by:
 
 ### Some common scenarios where job wrapper script is needed:
 
-- Compute nodes (EP) do not have the right environment to execute and need modules to be loaded. For e.g: miniconda
+- The execution point (EP) does not have the right environment to execute and needs modules to be loaded.
 - You need to activate a conda environment before anything else runs
 - `$HOME` is not set or is pointed to somewhere broken
 
