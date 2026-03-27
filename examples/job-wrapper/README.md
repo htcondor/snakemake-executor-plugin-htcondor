@@ -21,7 +21,7 @@ The job wrapper solves this by:
 ### Some common scenarios where job wrapper script is not needed:
 
 - Your workflow uses containers
-- You use a shared-file-system where compute nodes (EP) have the same environment as the access point (AP)
+- You use a shared file-system where the execution point (EP) has the same environment as the access point (AP)
 - All dependencies are transferred via HTCondor's file transferring system
 
 ### Illustration
