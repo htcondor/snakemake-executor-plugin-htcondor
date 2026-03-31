@@ -1,0 +1,20 @@
+jobs: 2
+
+executor: htcondor
+
+shared-fs-usage: none
+
+default-resources:
+  # This is the HTCondor job wrapper script that gets used to launch each job on the EP.
+  # At a high level it starts up a Snakemake instance on each EP.
+  job_wrapper: "wrapper.sh"
+
+  container_image: "'docker://jhiemstra/snakemake-dev-image:v1'"
+  universe: "container"
+
+  request_disk: "4GB"
+  request_memory: "1GB"
+  threads: 1
+
+  # The resource types currently supported by the HTCondor Snakemake executor plugin are discussed
+  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/README.md

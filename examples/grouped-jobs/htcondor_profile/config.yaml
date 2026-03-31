@@ -1,0 +1,16 @@
+jobs: 10
+
+executor: htcondor
+
+shared-fs-usage: none
+
+default-resources:
+  # Required for the executor
+  job_wrapper: "wrapper.sh"
+  container_image: "'docker://jhiemstra/snakemake-dev-image:v1'"
+  universe: "container"
+
+  threads: 1
+
+  # The resource types currently supported by the HTCondor Snakemake executor plugin are discussed
+  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/README.md

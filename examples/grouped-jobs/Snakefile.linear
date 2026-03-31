@@ -1,0 +1,32 @@
+rule all:
+    input: "results/linear/final_results.txt"
+
+# Layer 1: Preparing data for Layer 2
+rule prepare:
+    input: "inputs/raw.txt"
+    output: "results/prepared.txt"
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=2048,
+        htcondor_request_disk_mb=8192
+    shell: "cat {input} | sed 's/raw/prepared/' > {output}"
+
+# Layer 2: Analyze result from layer 1
+rule analyze:
+    input: "results/prepared.txt"
+    output: "results/analyzed.txt"
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=8192,
+        htcondor_request_disk_mb=2048
+    shell: "cat {input} | sed 's/prepared/analyzed/' > {output}"
+
+# Layer 3: Finalizing the result from layer 2
+rule finalize:
+    input: "results/analyzed.txt"
+    output: "results/linear/final_results.txt"
+    group: "my_group"
+    resources:
+        htcondor_request_mem_mb=2048,
+        htcondor_request_disk_mb=4096
+    shell: "for f in {input}; do cat $f; echo; done > {output}"
