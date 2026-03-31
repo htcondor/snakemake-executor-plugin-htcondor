@@ -6,7 +6,7 @@ Find out more about plugin's resources and configuration under ["Basic"](https:/
 
 ## How This Example Works
 
-This example runs a simple Snakemake's rule called `process` that transforms the input contents (i.e., `sample1.txt` and `sample2.txt`) to outputs by replacing the string `input` in each `.txt` file with the string `output`.
+This example runs a simple Snakemake's rule called `process` that transforms the input contents (i.e., `sample1.txt` and `sample2.txt`) to outputs by replacing the string `input` in each `.txt` with the string `output`.
 
 ### Snakefile's Structure
 
@@ -24,18 +24,21 @@ In `.snakemake`, you can find `htcondor` directory that contains `.err`, `.log`,
 - `.out` is the standard output, which records "normal" messages.
 - `.err` is the standard error. which records error messages or additional information.
 
-> All the outputs that would normally have been printed in the console are instead redirected to the appropriate `.out` or `.err` file.
+All the outputs that would normally have been printed in the console are instead redirected to the appropriate `.out` or `.err` file.
 
 **Snakemake**
+
 In addition to the HTCondor log, we also have the Snakemake's log file which can be found in `log` directory under `.snakemake`. The contents in the file is also printed to `Terminal`. This file contains the setups, job execution details and progress, warnings/errors, final status, and more. These are useful for understanding, troubleshooting, and inspecting the workflow that is being run.
 
 ### Plugin's Resources Used
 
-Resources are set as **default-resources** in `profile/config.yaml`
+Resources are set as **default-resources** in `htcondor_profile/config.yaml`
 
 - `request_memory` — memory requested from HTCondor (default: 1GB)
 - `request_disk` — disk space requested from HTCondor (default: 4GB)
 - `threads` — maps to HTCondor's `request_cpus` (default: 1)
+
+For HTCondor resource fields that accept size units (for example, `request_memory` and `request_disk`), values may include suffixes such as K, M, G, or T (optionally followed by B). These units are based on powers of 1024, so each step is 1024 times larger than the previous one (e.g., 1K = 1024, 1M = 1024 x 1024).
 
 These defaults apply to every rule in the workflow. For jobs with different
 requirements, you can override them per-rule using `resources:`
@@ -43,7 +46,7 @@ requirements, you can override them per-rule using `resources:`
 ### How to Run
 
 ```bash
-snakemake --profile profile
+snakemake --profile htcondor_profile
 ```
 
 ### Expected Output

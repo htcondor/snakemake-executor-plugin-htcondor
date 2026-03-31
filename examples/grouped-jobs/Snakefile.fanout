@@ -1,5 +1,5 @@
 rule all:
-    input: "results/final_results.txt"
+    input: "results/fan-out/final_results.txt"
 
 # Layer 1: Single job
 rule prepare:
@@ -43,7 +43,7 @@ rule analyze_part_c:
 # Layer 3: Combine results
 rule combine:
     input: "results/part_a.txt", "results/part_b.txt", "results/part_c.txt"
-    output: "results/final_results.txt"
+    output: "results/fan-out/final_results.txt"
     group: "my_group"
     resources:
         htcondor_request_mem_mb=2048,

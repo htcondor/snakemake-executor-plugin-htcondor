@@ -4,6 +4,8 @@ An illustrative example demonstrating how to configure the HTCondor executor for
 
 **Note:** Unlike other examples, this example is not directly runnable. A partially-shared filesystem requires real cluster infrastructure - shared mount points like `/staging` must be set up by your cluster administrator and actually exist on both AP and EPs. Substitute the paths shown here with real shared paths on your cluster.
 
+**Operational warning:** Before enabling partial shared filesystem mode in production, confirm filesystem policies and limits with your storage or cluster administrator. In particular, verify constraints such as directory/file count limits, metadata performance, and whether direct read/write access patterns from AP and EPs are supported for your expected workload.
+
 ## What Does Partially Shared Filesystem Mean?
 
 In some computing environments, the Access Point and Execution Points may share certain filesystem paths (e.g., `/staging`) while other paths are local to each machine. The executor can be configured to recognize these shared paths and avoid transferring files that are already accessible on both the AP and EPs.
@@ -21,7 +23,7 @@ Use the `--shared-fs-usage none` alongside `--htcondor-shared-fs-prefixes` to sp
 snakemake --executor htcondor --shared-fs-usage none --htcondor-shared-fs-prefixes "/staging,/shared"
 ```
 
-Or in your profile configuration:
+Or in your htcondor_profile configuration:
 
 ```yaml
 executor: htcondor
@@ -55,14 +57,14 @@ but your workflow directory is local to the AP:
     ├── wrapper.sh
     ├── inputs/
     │   └── local_input.txt   # Must be transferred by HTCondor
-    └── profile/
+    └── htcondor_profile/
         └── config.yaml
 
 /staging/shared_data/         # Mounted on both AP and EPs
     └── shared_input.txt      # Already accessible, no transfer needed
 ```
 
-With this profile:
+With this htcondor_profile:
 
 ```yaml
 jobs: 2
@@ -76,6 +78,8 @@ default-resources:
   request_memory: "1GB"
   threads: 1
 ```
+
+For HTCondor resource fields that accept size units (for example, `request_memory` and `request_disk`), values may include suffixes such as K, M, G, or T (optionally followed by B). These units are based on powers of 1024, so each step is 1024 times larger than the previous one (e.g., 1K = 1024, 1M = 1024 x 1024).
 
 In this setup:
 

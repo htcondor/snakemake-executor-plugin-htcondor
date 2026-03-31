@@ -25,14 +25,12 @@ default-resources:
   # Using values that are needlessly larger than necessary for your jobs can lead to longer
   # queue wait times and lower throughput. Reference the `.log` files produced by HTCondor
   # to see exactly what resources were used by your jobs for fine-tuning.
+  # HTCondor accepts MB/GB suffixes and interprets them as binary units
+  # (MiB/GiB semantics), so 1GB = 1024 MiB.
   request_disk: "4GB"
   request_memory: "1GB"
   # Tell HTCondor how many CPUs your job needs (this correlate's to HTCondor's `request_cpus` parameter).
   threads: 1
 
-  # You can request additional types of resources as needed, e.g.
-  # request_gpus: 1
-  # gpus_minimum_memory: 40GB
-  #
   # The resource types currently supported by the HTCondor Snakemake executor plugin are discussed
-  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/docs/further.md
+  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/README.md

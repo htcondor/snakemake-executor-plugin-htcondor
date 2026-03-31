@@ -8,6 +8,9 @@ shared-fs-usage: none
 
 default-resources:
   job_wrapper: "wrapper.sh" #required
+  # Keep transferred files in their relative directory structure on the EP.
+  # This is important for path consistency in non-shared filesystem mode.
+  # Note: this is already the executor default (true); it is listed here for clarity.
   preserve_relative_paths: true
 
   # Specify your EP container image and the corresponding HTCondor universe to use.
@@ -21,9 +24,5 @@ default-resources:
   request_memory: "1GB"
   threads: 1
 
-  # You can request additional types of resources as needed, e.g.
-  # request_gqus: 1
-  # gpus_minimum_memory: 40GB
-  #
   # The resource types currently supported by the HTCondor Snakemake executor plugin are discussed
-  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/docs/further.md
+  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/README.md

@@ -14,14 +14,14 @@ The job wrapper solves this by:
 
 ### Some common scenarios where job wrapper script is needed:
 
-- The execution point (EP) does not have the right environment to execute and needs modules to be loaded.
+- The execution point (EP) does not have the right environment to execute and needs modules to be loaded. For example: miniconda
 - You need to activate a conda environment before anything else runs
 - `$HOME` is not set or is pointed to somewhere broken
 
 ### Some common scenarios where job wrapper script is not needed:
 
 - Your workflow uses containers
-- You use a shared file-system where the execution point (EP) has the same environment as the access point (AP)
+- You use a shared file-system where the execution nodes (EP) have the same environment as the access point (AP)
 - All dependencies are transferred via HTCondor's file transferring system
 
 ### Illustration
@@ -56,16 +56,14 @@ This example runs a simple two-step pipeline that processes two samples (`sample
 1. **`make_output`** — Processes each intermediary file, appending `"bar"`
    to produce the final `results/output_{sample}.txt`
 
-The pipeline exists purely to demonstrate the job wrapper mechanic — the
-rules themselves do minimal work so the focus stays on how `wrapper.sh`
-sets up the environment before each rule executes on the worker node.
+The pipeline exists purely to demonstrate the job wrapper mechanic — the rules themselves do minimal work so the focus stays on how `wrapper.sh` sets up the environment before each rule executes on the worker node.
 
 Refer to `wrapper.sh` to see how a simple wrapper script is setup.
 
 ### How to Run
 
 ```bash
-snakemake --profile profile
+snakemake --profile htcondor_profile
 ```
 
 ### Expected Outputs

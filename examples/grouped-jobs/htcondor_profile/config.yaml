@@ -12,9 +12,5 @@ default-resources:
 
   threads: 1
 
-  # You can request additional types of resources as needed, e.g.
-  # request_gpus: 1
-  # gpus_minimum_memory: 40GB
-  #
   # The resource types currently supported by the HTCondor Snakemake executor plugin are discussed
-  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/docs/further.md
+  # here: https://github.com/htcondor/snakemake-executor-plugin-htcondor/blob/main/README.md
