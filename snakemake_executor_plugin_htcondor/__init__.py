@@ -20,6 +20,9 @@ from os.path import join, isabs, relpath, normpath, exists
 from os import makedirs, sep
 import re
 import sys
+import os
+from pathlib import Path
+import json
 
 LogSpec = tuple[Callable[[str], None], str]
 
@@ -215,6 +218,48 @@ class Executor(RemoteExecutor):
 
         # Path to the unified log file that tracks all jobs submitted
         self._unified_log_file = join(self.jobDir, "snakemake-rules.log")
+
+        # Get mgmt_id from env
+        mgmt_id = int(os.environ.get("SNAKEMAKE_MGMT_ID"))
+
+        self._metadata_file = join(self.jobDir, f"snakemake-metadata-{mgmt_id}.json")
+        self._metadata = {}
+
+        # Initial metadata with DAG information
+        self._initialize_metadata(self.jobDir, mgmt_id)
+
+    def _initialize_metadata(self, metadata_dir, mgmt_id):
+        """
+        Initialize metadata (DAG-level metadata) for monitoring jobs
+
+        Args:
+            metadata_dr (str): Path to the directory where metadata and logs are stored.
+            mgmt_id (int): Management/job id (ClusterId), which represents the local universe job, used to name the metadata file
+
+        Returns:
+            None
+        Raises:
+            OSError / IOError: If the metadata file cannot be written.
+        """
+
+        # Store absolute path to metadata directory
+        metadata_dir_abs = str(Path(metadata_dir).resolve())
+
+        dags = self.workflow.dag
+
+        self._metadata = {
+            "metadata_dir": metadata_dir_abs,
+            "mgmt_job_id": mgmt_id,
+            "mgmt_job_name": f"snakemake-mgmt-{mgmt_id}" if mgmt_id else None,
+            "submitted_at": time.time(),
+            "total_nodes": len(dags.jobs),  # total DAG size
+            "executable_nodes": len(
+                [job for job in dags.needrun_jobs() if not job.is_local]
+            ),  # nodes that are executable, not target rules and local rules
+            "jobs": {},  # populated as per-node job records are submitted
+        }
+        with open(self._metadata_file, "w") as f:
+            json.dump(self._metadata, f, indent=2)
 
     def _validate_held_timeout(self):
         """Validate the held job timeout configuration.
@@ -1308,16 +1353,86 @@ class Executor(RemoteExecutor):
             traceback.print_exc()
             raise WorkflowError(f"Failed to submit HTCondor job: {e}")
 
+        cluster_id = submit_result.cluster()
+
         self.logger.info(
             f"Job {job.jobid} submitted to "
-            f"HTCondor Cluster ID {submit_result.cluster()} with batch name {batch_name}\n"
+            f"HTCondor Cluster ID {cluster_id} with batch name {batch_name}\n"
             f"The logs of the HTCondor job are stored "
             f"in {self._unified_log_file}"
         )
 
-        self.report_job_submission(
-            SubmittedJobInfo(job=job, external_jobid=submit_result.cluster())
-        )
+        self.report_job_submission(SubmittedJobInfo(job=job, external_jobid=cluster_id))
+
+        # Store one metadata record per Snakemake node so grouped and
+        # non-grouped jobs share the same status shape, making query simpler
+        submitted_jobs = job.jobs if job.is_group() and hasattr(job, "jobs") else [job]
+        for j in submitted_jobs:
+            self._add_job_to_metadata(cluster_id, j, grouped=job.is_group())
+
+    def _add_job_to_metadata(
+        self, cluster_id, job: JobExecutorInterface, grouped: bool = False
+    ):
+        """
+        Register a newly-submitted job in the metadata.
+
+        Record a job node (or node instance for grouped jobs) under the metadata `jobs` key
+        mapping so status and timestamps are available to external readers
+
+        Args:
+            cluster_id (int): HTCondor cluster id under which the job was submitted.
+            job (JobExecutorInterface): Snakemake job object
+            grouped (bool): True if the job is a part of a grouped submission. Default to False.
+
+        Return
+            None
+
+        Raises:
+            OSError / IOError: If the metadata file cannot be written.
+        """
+        # Use a stable per-node key so grouped jobs can record multiple nodes
+        # under the same HTCondor cluster without overwriting each other.
+        job_key = f"{cluster_id}:{job.jobid}"
+
+        # Initialize/add this job's information to the metadata's job key
+        self._metadata["jobs"][job_key] = {
+            "cluster_id": cluster_id,
+            "rule_name": job.name,
+            "jobid": job.jobid,
+            "display_name": f"{job.name}-{job.jobid}",
+            "grouped": grouped,
+            "status": "IDLE",  # initial status
+            "submitted_at": time.time(),
+            "last_updated": time.time(),
+        }
+
+        with open(self._metadata_file, "w") as f:
+            json.dump(self._metadata, f, indent=2)
+
+    def _update_job_status_in_metadata(self, cluster_id, new_status: JobStatus):
+        """
+        Update status and timestamp for all metadata entries matching `cluster_id`
+
+        Reflect lifecycle events of a node. Avoid expensive schedd query.
+
+        Args:
+            cluster_id (int): HTCondor cluster id whose job entries should be updated.
+            new_status (JobStatus): New status value
+
+        Returns:
+            None
+
+        Raises:
+            OSError / IOError: If the metadata file cannot be written.
+        """
+        updated_at = time.time()
+        for job_data in self._metadata["jobs"].values():
+            if job_data.get("cluster_id") == cluster_id:
+                job_data["status"] = new_status.value
+                job_data["last_updated"] = updated_at
+
+        with open(self._metadata_file, "w") as f:
+            json.dump(self._metadata, f, indent=2)
 
     def _get_job_event_log(self) -> Optional[JobEventLog]:
         """
@@ -1647,6 +1762,8 @@ class Executor(RemoteExecutor):
                 return None
         try:
             # Process only this cluster's events
+            # Remember previous status so we only write metadata on changes
+            previous_status = current_state.status
             events_read = 0
             for event in self._event_logs.pop(cluster_id, []):
                 events_read += 1
@@ -1731,6 +1848,17 @@ class Executor(RemoteExecutor):
                 f"Read {events_read} new events for cluster {cluster_id}, "
                 f"status: {current_state.status.display_name}"
             )
+
+            # If the status changed as a result of processing events, persist it to metadata
+            try:
+                if current_state.status != previous_status:
+                    self._update_job_status_in_metadata(
+                        cluster_id, current_state.status
+                    )
+            except Exception:
+                self.logger.debug(
+                    f"Failed to update metadata for cluster {cluster_id} after reading events"
+                )
 
         except Exception as e:
             self.logger.warning(
@@ -1936,7 +2064,17 @@ class Executor(RemoteExecutor):
                     job_state = self._try_read_job_log(cluster_id)
 
                     if job_state is not None:
-                        # Got state from log - process it immediately
+                        # Got state from log - update metadata and process it immediately
+                        try:
+                            self._update_job_status_in_metadata(
+                                cluster_id, job_state.status
+                            )
+                        except Exception:
+                            # Don't let metadata update failures prevent normal processing
+                            self.logger.debug(
+                                f"Failed to update metadata for cluster {cluster_id} from log path"
+                            )
+
                         result = self._report_and_resolve_job_state(
                             current_job, job_state
                         )
@@ -1985,6 +2123,8 @@ class Executor(RemoteExecutor):
                     # Update cached state
                     self._job_current_states[cluster_id] = job_state
                     result = self._report_and_resolve_job_state(current_job, job_state)
+                    # Update metadata
+                    self._update_job_status_in_metadata(cluster_id, job_state.status)
                     if result is not None:
                         yield result
                 else:
@@ -2005,6 +2145,8 @@ class Executor(RemoteExecutor):
                     # Update cached state
                     self._job_current_states[cluster_id] = job_state
                     result = self._report_and_resolve_job_state(current_job, job_state)
+                    # Update metadata
+                    self._update_job_status_in_metadata(cluster_id, job_state.status)
                     if result is not None:
                         yield result
                 else:
