@@ -1,0 +1,6 @@
+# Configuration for the `typos` spell-checker (pre-commit hook).
+#
+# HTCondor domain terms that are not typos.
+[default.extend-words]
+# "startd" is the HTCondor execution-point daemon (and STARTD_ATTRS config).
+startd = "startd"

@@ -1,0 +1,28 @@
+# Execution Point image: HTCondor startd + Snakemake.
+#
+# The EP runs each rule by executing `snakemake` for that single rule (via
+# wrapper.sh), in vanilla universe, as a dedicated per-slot account (slot1_N).
+# It therefore needs python + snakemake installed SYSTEM-WIDE so those accounts
+# can run them. It does NOT need the executor plugin (the plugin only runs on
+# the AP). The base image's CMD (/start.sh -> supervisord -> startd) is kept.
+#
+# Pinned to a specific HTCondor version (not :latest) so CI builds are
+# reproducible and can't break from an upstream :latest republish.
+FROM htcondor/execute:25.11.0-el9
+
+USER root
+
+RUN dnf install -y \
+        python3.11 \
+        python3.11-pip \
+    && dnf clean all \
+    && pip3.11 install --no-cache-dir "snakemake>=9.6.2" \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python
+
+# Advertise a custom machine attribute so the torture test's attribute_check
+# rule can require it (requirements="TortureTestEP == true"). Because the job
+# only matches when this is advertised, a successful run proves the executor's
+# `requirements` actually drove matchmaking -- not merely that the string was
+# written into the submit description. (99- prefix: loaded after base configs.)
+RUN printf 'TortureTestEP = true\nSTARTD_ATTRS = $(STARTD_ATTRS) TortureTestEP\n' \
+        > /etc/condor/config.d/99-torture-ep.conf

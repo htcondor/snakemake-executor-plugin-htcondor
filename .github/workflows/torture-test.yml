@@ -1,0 +1,110 @@
+name: Torture Test
+
+# Stands up a real multi-container HTCondor pool (central manager + Access Point
+# + Execution Point) that shares only a single /staging path between the AP and
+# EP, then runs the "torture test" workflow against it. This exercises the
+# executor's hardest paths — file transfer, transfer_output_remaps, grouped jobs,
+# temp() exclusion, env-var injection, AP-side mtime correctness (issue #48), and
+# partial-shared-filesystem handling via --htcondor-shared-fs-prefixes.
+#
+# See github_scripts/README.md for the design and how to reproduce it locally.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  torture-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: github_scripts/pool
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate pool password
+        run: ./make-pool-password.sh
+
+      - name: Build pool images (with GitHub Actions layer cache)
+        # `docker compose build` has no layer cache across CI runs, so each run
+        # re-does dnf/pip from scratch. Build via buildx bake instead, reading
+        # the build targets from the compose file, with the GHA cache backend.
+        # --load puts the images (tagged per the compose `image:` fields) into
+        # the local docker daemon so `up --no-build` can use them.
+        # BUILDX_BAKE_ENTITLEMENTS_FS=0: the ap build context is the repo root
+        # (../.. from the compose file), which bake otherwise refuses to read
+        # without an explicit filesystem entitlement.
+        # Note: cache-to may be skipped on PRs from forks (read-only cache
+        # token); the build still succeeds, just without populating the cache.
+        env:
+          BUILDX_BAKE_ENTITLEMENTS_FS: "0"
+        run: |
+          docker buildx bake -f docker-compose.yml \
+            --set "*.cache-from=type=gha" \
+            --set "*.cache-to=type=gha,mode=max" \
+            --load
+
+      - name: Start the HTCondor pool
+        # --no-build: use the images just built by bake (cm has no build section
+        # and is pulled).
+        run: docker compose up -d --no-build
+
+      - name: Wait for the pool to form (AP schedd up + EP registered)
+        run: |
+          echo "Waiting for the AP schedd to be reachable and the EP to register..."
+          for i in $(seq 1 60); do
+            # condor_q exits 0 only when the local schedd is reachable; the
+            # condor_status check confirms the EP startd has joined the pool.
+            # Both are required before snakemake can submit (htcondor.Schedd()).
+            if docker compose exec -T ap condor_q >/dev/null 2>&1 \
+               && docker compose exec -T ap condor_status -startd -af Name 2>/dev/null | grep -q .; then
+              echo "Pool is up:"
+              docker compose exec -T ap condor_status
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Timed out waiting for the AP schedd / EP registration"
+          docker compose exec -T ap condor_status || true
+          docker compose exec -T ap condor_q || true
+          docker compose logs
+          exit 1
+
+      - name: Run the torture test
+        run: |
+          docker compose exec -T -u submituser ap \
+            bash -lc 'cd ~/torture-test && ./run.sh'
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "===== condor_q (AP) ====="
+          docker compose exec -T ap condor_q -nobatch || true
+          echo "===== condor_q analyze ====="
+          docker compose exec -T ap bash -lc 'condor_q -analyze || true'
+          echo "===== condor_status (pool) ====="
+          docker compose exec -T ap condor_status || true
+          echo "===== Unified snakemake event log + per-rule out/err ====="
+          docker compose exec -T -u submituser ap bash -lc '
+            cd ~/torture-test || exit 0
+            echo "--- logs/ tree ---"; find logs -type f 2>/dev/null | sort
+            for f in $(find logs -type f \( -name "*.log" -o -name "*.out" -o -name "*.err" \) 2>/dev/null | sort); do
+              echo "===== $f ====="; cat "$f"
+            done
+          ' || true
+          echo "===== EP startd log ====="
+          docker compose exec -T ep bash -lc 'cat /var/log/condor/StartLog 2>/dev/null | tail -n 200' || true
+          echo "===== AP schedd log ====="
+          docker compose exec -T ap bash -lc 'cat /var/log/condor/SchedLog 2>/dev/null | tail -n 200' || true
+
+      - name: Tear down the pool
+        if: always()
+        run: docker compose down -v

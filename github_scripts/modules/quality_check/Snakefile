@@ -1,0 +1,41 @@
+# Module Snakefile for quality checking
+# This module provides a quality check rule that validates processed data
+# It also uses a nested module for additional validation
+
+# Use nested validation module
+module validation:
+    snakefile: "validation/Snakefile"
+
+use rule * from validation as validation_*
+
+rule quality_check:
+    input:
+        "{prefix}_processed.txt"
+    output:
+        "{prefix}_qc.txt"
+    resources:
+        universe="vanilla",
+        request_disk="1GB",
+        request_memory="512MB",
+        job_wrapper="wrapper.sh"
+    shell:
+        """
+        echo "Quality Check Report" > {output}
+        echo "===================" >> {output}
+        echo "" >> {output}
+
+        # Count lines in input
+        line_count=$(wc -l < {input})
+        echo "Lines in input: $line_count" >> {output}
+
+        # Check if input has content
+        if [ -s {input} ]; then
+            echo "Status: PASS - File has content" >> {output}
+        else
+            echo "Status: FAIL - File is empty" >> {output}
+        fi
+
+        echo "" >> {output}
+        echo "Input contents:" >> {output}
+        cat {input} >> {output}
+        """

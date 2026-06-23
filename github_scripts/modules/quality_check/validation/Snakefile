@@ -1,0 +1,30 @@
+# Nested module Snakefile for validation utilities
+# This demonstrates recursive module Snakefile detection
+
+rule validate_format:
+    input:
+        "{prefix}_qc.txt"
+    output:
+        "{prefix}_validated.txt"
+    resources:
+        universe="vanilla",
+        request_disk="1GB",
+        request_memory="512MB",
+        job_wrapper="wrapper.sh"
+    shell:
+        """
+        echo "Format Validation Report" > {output}
+        echo "========================" >> {output}
+        echo "" >> {output}
+
+        # Check if QC report exists and has expected header
+        if grep -q "Quality Check Report" {input}; then
+            echo "Status: PASS - Valid QC report format" >> {output}
+        else
+            echo "Status: FAIL - Invalid QC report format" >> {output}
+        fi
+
+        echo "" >> {output}
+        echo "QC Report contents:" >> {output}
+        cat {input} >> {output}
+        """

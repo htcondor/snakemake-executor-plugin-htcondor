@@ -1,0 +1,49 @@
+# Access Point image: HTCondor schedd + Snakemake + the htcondor executor plugin.
+#
+# Build context is the executor repo root (see docker-compose.yml) so we can
+# COPY the plugin source and install it. The base image's CMD (/start.sh ->
+# supervisord -> condor daemons) is preserved.
+#
+# Pinned to a specific HTCondor version (not :latest) for reproducible CI builds.
+FROM htcondor/submit:25.11.0-el9
+
+USER root
+
+# Python 3.11 toolchain (mirrors .devcontainer/Dockerfile).
+RUN dnf install -y \
+        python3.11 \
+        python3.11-pip \
+        python3.11-devel \
+        gcc \
+        git \
+    && dnf clean all
+
+# Install Snakemake and the HTCondor executor plugin from the checked-out
+# source. The plugin depends on the `htcondor` pip package, which provides the
+# python bindings (htcondor2) the executor uses to talk to the local schedd.
+#
+# POETRY_DYNAMIC_VERSIONING_BYPASS lets us build from a COPYed tree with no .git
+# history (poetry-dynamic-versioning would otherwise fail to derive a version).
+# Note: poetry.lock is git-ignored (regenerated in CI), so it is NOT copied here
+# and is not needed -- we install with pip, and the wheel build only needs
+# pyproject.toml + README.md (referenced as the project readme) + the package.
+ENV POETRY_DYNAMIC_VERSIONING_BYPASS=0.0.0
+COPY pyproject.toml README.md /opt/plugin/
+COPY snakemake_executor_plugin_htcondor /opt/plugin/snakemake_executor_plugin_htcondor
+RUN pip3.11 install --no-cache-dir "snakemake>=9.6.2" /opt/plugin \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python
+
+# Drop the CI torture-test workflow into the submit user's home — a path NOT
+# under /staging, so its non-shared files are genuinely transferred. We COPY
+# the workflow files explicitly (not the whole github_scripts/ dir) so the
+# pool/ directory and the generated pool_password secret are never baked in.
+RUN mkdir -p /home/submituser/torture-test
+COPY github_scripts/Snakefile \
+     github_scripts/wrapper.sh \
+     github_scripts/run.sh \
+     github_scripts/cleanup.sh \
+     /home/submituser/torture-test/
+COPY github_scripts/scripts /home/submituser/torture-test/scripts
+COPY github_scripts/modules /home/submituser/torture-test/modules
+RUN chown -R submituser:submituser /home/submituser/torture-test \
+    && chmod +x /home/submituser/torture-test/*.sh

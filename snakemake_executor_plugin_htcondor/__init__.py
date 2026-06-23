@@ -462,27 +462,85 @@ class Executor(RemoteExecutor):
 
     def _format_htcondor_environment(self, envvars: dict) -> str:
         """
-        Serialize a dict of environment variables to HTCondor's new-style
-        environment string format.
+        Serialize a dict of environment variables to an HTCondor new-syntax
+        environment *body* (the space-separated ``NAME=value`` assignments that
+        go *inside* the outer double quotes).
 
-        HTCondor new-style format places each assignment as KEY="value",
-        separated by spaces.  Double-quote characters inside a value are
-        escaped by doubling them (e.g. a value containing '"' becomes '""').
+        HTCondor's new environment syntax requires the entire environment value
+        to be wrapped in double quotes; the caller (run_job) adds those outer
+        quotes once, around the combined body.  Within that body:
 
-        Example output: 'SNAKEMAKE_STORAGE_S3_REGION="us-east-1" FOO="bar"'
+        * Assignments are ``NAME=value`` separated by single spaces.
+        * A literal double quote in a value is written as ``""``.
+        * A literal single quote in a value is written as ``''`` -- but this is
+          only interpreted as a literal quote *inside* a single-quoted section.
+        * A value containing whitespace OR a single quote must therefore be
+          wrapped in single quotes: whitespace so the space is not parsed as a
+          delimiter, and a single quote so its doubled ``''`` lands inside a
+          single-quoted section (otherwise it reads as an empty section and the
+          quote is dropped).
+
+        Example body: ``SNAKEMAKE_STORAGE_S3_REGION=us-east-1 GREETING='hi there'``
+        which the caller wraps as ``"SNAKEMAKE_STORAGE_S3_REGION=us-east-1 ...``"``.
+
+        NOTE: the previous implementation emitted ``KEY="value"`` per variable
+        but never added the outer quotes, so HTCondor fell back to *old* syntax
+        and delivered values wrapped in literal double quotes (and broke on
+        values containing spaces).
 
         Args:
             envvars: Dict mapping variable names to their string values.
 
         Returns:
-            HTCondor new-style environment string, ready to assign to the
-            ``environment`` key in an htcondor.Submit dict.
+            HTCondor new-syntax environment body (no outer quotes).
         """
         parts = []
         for k, v in envvars.items():
-            v_escaped = str(v).replace('"', '""')
-            parts.append(f'{k}="{v_escaped}"')
+            s = str(v)
+            # Double-quotes and single-quotes are escaped by doubling them.
+            escaped = s.replace('"', '""').replace("'", "''")
+            # The value must be wrapped in single quotes when it contains
+            # whitespace (so the space is not parsed as a separator between
+            # assignments) OR a single quote (the doubled '' is only interpreted
+            # as a literal quote *inside* a single-quoted section; left unwrapped
+            # it would be read as an empty section and the quote dropped).
+            if any(ch.isspace() for ch in s) or "'" in s:
+                escaped = f"'{escaped}'"
+            parts.append(f"{k}={escaped}")
         return " ".join(parts)
+
+    def _assemble_environment(self, snakemake_env: dict, user_env) -> Optional[str]:
+        """Build the full HTCondor ``environment`` submit value.
+
+        Merges the Snakemake-managed env vars (storage-plugin tokens, declared
+        ``--envvars``, etc.) with the user-supplied ``environment`` job resource,
+        and wraps the result in the outer double quotes that HTCondor's new
+        environment syntax requires.
+
+        Args:
+            snakemake_env: Dict of Snakemake-managed vars, serialized via
+                ``_format_htcondor_environment``.
+            user_env: The raw ``environment`` job resource, if any.  It must
+                already be a valid new-syntax body fragment (``NAME=value`` ...,
+                with embedded quotes escaped per the new-syntax rules) -- it is
+                appended verbatim, not escaped, and later assignments shadow
+                earlier ones (last assignment wins in HTCondor).
+
+        Returns:
+            The quoted ``environment`` value, or ``None`` if there is nothing to
+            set.
+        """
+        parts = []
+        if snakemake_env:
+            parts.append(self._format_htcondor_environment(snakemake_env))
+        if user_env:
+            parts.append(str(user_env))
+        if not parts:
+            return None
+        # The whole value must be wrapped in double quotes — without them
+        # HTCondor uses old syntax and values arrive wrapped in literal quotes
+        # (and break on spaces).
+        return '"' + " ".join(parts) + '"'
 
     def _format_size_mb(self, mb_value: int) -> str:
         """
@@ -1206,23 +1264,17 @@ class Executor(RemoteExecutor):
             ),
         )
 
-        # Build the HTCondor environment string by merging:
-        #   1. Snakemake-managed env vars (storage plugin tokens, etc.) from self.envvars()
-        #   2. Any extra env vars the user declared via the `environment` job resource
-        # Using HTCondor's native `environment` key is strictly better than
-        # embedding "export VAR=val &&" in the arguments string, which breaks
-        # the job_wrapper code path (the args string must start cleanly with
-        # "python -m snakemake" for prefix-stripping to succeed).
-        env_parts = []
-        snakemake_env = self.envvars()
-        if snakemake_env:
-            env_parts.append(self._format_htcondor_environment(snakemake_env))
-        if user_env := job.resources.get("environment"):
-            # User-provided value is appended after Snakemake vars; user values
-            # for the same key will shadow ours (last assignment wins in HTCondor).
-            env_parts.append(str(user_env))
-        if env_parts:
-            submit_dict["environment"] = " ".join(env_parts)
+        # Build the HTCondor environment string by merging Snakemake-managed env
+        # vars (storage plugin tokens, declared --envvars, etc.) with the user's
+        # `environment` job resource.  Using HTCondor's native `environment` key
+        # is strictly better than embedding "export VAR=val &&" in the arguments
+        # string, which breaks the job_wrapper code path (the args string must
+        # start cleanly with "python -m snakemake" for prefix-stripping).
+        env_value = self._assemble_environment(
+            self.envvars(), job.resources.get("environment")
+        )
+        if env_value is not None:
+            submit_dict["environment"] = env_value
 
         for key in ["input", "max_materialize", "max_idle"]:
             self._set_resources(submit_dict, job, key)

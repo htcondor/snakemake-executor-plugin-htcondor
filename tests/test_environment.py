@@ -25,19 +25,25 @@ class TestFormatHtcondorEnvironment:
             Executor._format_htcondor_environment.__get__(self.executor, Executor)
         )
 
+    # The method returns an HTCondor new-syntax environment *body* (the
+    # NAME=value assignments that go inside the outer double quotes, which the
+    # caller adds).  A simple value is emitted bare; values containing whitespace
+    # or a single quote are single-quoted.  Literal double/single quotes are
+    # doubled.
+
     def test_single_variable(self):
-        """Single key-value pair is serialized correctly."""
+        """Single key-value pair is serialized as a bare NAME=value assignment."""
         result = self.executor._format_htcondor_environment({"FOO": "bar"})
-        assert result == 'FOO="bar"'
+        assert result == "FOO=bar"
 
     def test_multiple_variables(self):
-        """Multiple variables are space-separated, each in KEY=\"value\" form."""
+        """Multiple variables are space-separated NAME=value assignments."""
         result = self.executor._format_htcondor_environment(
             {"A": "1", "B": "2", "C": "3"}
         )
-        assert 'A="1"' in result
-        assert 'B="2"' in result
-        assert 'C="3"' in result
+        assert "A=1" in result
+        assert "B=2" in result
+        assert "C=3" in result
         # They should be space-separated
         parts = result.split(" ")
         assert len(parts) == 3
@@ -48,27 +54,92 @@ class TestFormatHtcondorEnvironment:
         assert result == ""
 
     def test_value_with_double_quotes_escaped(self):
-        """Double quotes inside values must be doubled for HTCondor."""
+        """Double quotes inside values are doubled; the spaced value is single-quoted."""
         result = self.executor._format_htcondor_environment({"MSG": 'say "hello"'})
-        assert result == 'MSG="say ""hello"""'
+        assert result == 'MSG=\'say ""hello""\''
+
+    def test_value_with_double_quotes_no_space(self):
+        """Embedded double quotes are doubled even without surrounding spaces."""
+        result = self.executor._format_htcondor_environment({"V": 'pre"mid"post'})
+        assert result == 'V=pre""mid""post'
 
     def test_value_with_spaces(self):
-        """Values with spaces are properly quoted."""
+        """Values with spaces are wrapped in single quotes."""
         result = self.executor._format_htcondor_environment(
-            {"PATH": "/usr/bin /usr/local/bin"}
+            {"PATHLIST": "/usr/bin /usr/local/bin"}
         )
-        assert result == 'PATH="/usr/bin /usr/local/bin"'
+        assert result == "PATHLIST='/usr/bin /usr/local/bin'"
+
+    def test_value_with_single_quote_escaped(self):
+        """A single quote in a spaced value is doubled inside the single-quoted value."""
+        result = self.executor._format_htcondor_environment({"MSG": "it's here"})
+        assert result == "MSG='it''s here'"
+
+    def test_value_with_single_quote_no_space(self):
+        """A single quote WITHOUT whitespace still forces single-quote wrapping.
+
+        Regression test: if such a value is not wrapped, the doubled '' lands
+        outside any single-quoted section and HTCondor reads it as an empty
+        section, silently dropping the quote (e.g. "it's" -> "its").
+        """
+        result = self.executor._format_htcondor_environment({"MSG": "it's"})
+        assert result == "MSG='it''s'"
+
+    def test_value_that_is_only_a_single_quote(self):
+        """A lone single quote is wrapped and doubled, not emitted bare."""
+        result = self.executor._format_htcondor_environment({"Q": "'"})
+        assert result == "Q=''''"
 
     def test_value_with_equals_sign(self):
-        """Values containing = are properly quoted."""
+        """Values containing = need no special quoting when there is no space."""
         result = self.executor._format_htcondor_environment({"OPTS": "key=value"})
-        assert result == 'OPTS="key=value"'
+        assert result == "OPTS=key=value"
 
     def test_non_string_value_coerced(self):
         """Non-string values are coerced to strings."""
         result = self.executor._format_htcondor_environment({"COUNT": 42, "FLAG": True})
-        assert 'COUNT="42"' in result
-        assert 'FLAG="True"' in result
+        assert "COUNT=42" in result
+        assert "FLAG=True" in result
+
+
+class TestAssembleEnvironment:
+    """Tests for _assemble_environment() — merge + outer-quote wrapping."""
+
+    def setup_method(self):
+        self.executor = Mock(spec=Executor)
+        # _assemble_environment calls _format_htcondor_environment internally.
+        self.executor._format_htcondor_environment = (
+            Executor._format_htcondor_environment.__get__(self.executor, Executor)
+        )
+        self.executor._assemble_environment = Executor._assemble_environment.__get__(
+            self.executor, Executor
+        )
+
+    def test_snakemake_env_only_is_wrapped(self):
+        """The combined body is wrapped in the outer double quotes new syntax needs."""
+        result = self.executor._assemble_environment({"A": "1"}, None)
+        assert result == '"A=1"'
+
+    def test_merges_snakemake_and_user_env(self):
+        """The user `environment` resource is appended after the Snakemake vars."""
+        result = self.executor._assemble_environment({"A": "1"}, "B=2")
+        assert result == '"A=1 B=2"'
+
+    def test_user_env_only(self):
+        """With no Snakemake vars, only the user fragment is wrapped."""
+        result = self.executor._assemble_environment({}, "B=2")
+        assert result == '"B=2"'
+
+    def test_nothing_to_set_returns_none(self):
+        """No vars at all → None (so the caller omits the environment key)."""
+        assert self.executor._assemble_environment({}, None) is None
+
+    def test_value_is_wrapped_in_double_quotes(self):
+        """The result always begins and ends with a double quote (new-syntax frame)."""
+        result = self.executor._assemble_environment({"GREETING": "hi there"}, None)
+        assert result.startswith('"')
+        assert result.endswith('"')
+        assert result == "\"GREETING='hi there'\""
 
 
 # ---------------------------------------------------------------------------
