@@ -5,7 +5,7 @@
 # supervisord -> condor daemons) is preserved.
 #
 # Pinned to a specific HTCondor version (not :latest) for reproducible CI builds.
-FROM htcondor/submit:25.11.0-el9
+FROM htcondor/submit:latest
 
 USER root
 
