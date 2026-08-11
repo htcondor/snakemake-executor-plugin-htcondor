@@ -18,6 +18,7 @@ from htcondor2 import JobEventLog, JobEventType
 import traceback
 from os.path import join, isabs, relpath, normpath, exists
 from os import makedirs, sep
+import os
 import re
 import sys
 
@@ -215,6 +216,10 @@ class Executor(RemoteExecutor):
 
         # Path to the unified log file that tracks all jobs submitted
         self._unified_log_file = join(self.jobDir, "snakemake-rules.log")
+
+        # Get mgmt_id from env, this needs to be optional for those who are not using CLI
+        mgmt_id_raw = os.environ.get("SNAKEMAKE_MGMT_ID")
+        self._mgmt_id = int(mgmt_id_raw) if mgmt_id_raw else None
 
     def _validate_held_timeout(self):
         """Validate the held job timeout configuration.
@@ -1185,6 +1190,9 @@ class Executor(RemoteExecutor):
             "error": join(rule_log_dir, f"{rule_name}-{job.jobid}_$(ClusterId).err"),
             "request_cpus": str(job.threads),
         }
+        # Associate this job with its management id if there is one
+        if self._mgmt_id is not None:
+            submit_dict["+SnakeManagerJobId"] = self._mgmt_id
 
         # Supported universes for HTCondor
         supported_universes = [
