@@ -2111,6 +2111,7 @@ class Executor(RemoteExecutor):
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
         # Cancel all active jobs.
         # This method is called when Snakemake is interrupted.
+        # Triggered only when Snakemake process was alive before the interruption.
 
         if active_jobs:
             schedd = htcondor.Schedd()
