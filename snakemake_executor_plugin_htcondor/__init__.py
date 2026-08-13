@@ -220,6 +220,10 @@ class Executor(RemoteExecutor):
         # Get mgmt_id from env, this needs to be optional for those who are not using CLI
         mgmt_id_raw = os.environ.get("SNAKEMAKE_MGMT_ID")
         self._mgmt_id = int(mgmt_id_raw) if mgmt_id_raw else None
+        if self._mgmt_id is not None:
+            htcondor.Schedd().edit(
+                f"ClusterId == {self._mgmt_id}", "SnakeMgmtPID", os.getpid()
+            )
 
     def _validate_held_timeout(self):
         """Validate the held job timeout configuration.
@@ -2116,6 +2120,7 @@ class Executor(RemoteExecutor):
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
         # Cancel all active jobs.
         # This method is called when Snakemake is interrupted.
+        # Triggered only when Snakemake process was alive before the interruption.
 
         if active_jobs:
             schedd = htcondor.Schedd()
