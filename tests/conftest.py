@@ -50,6 +50,7 @@ def create_mock_submit_executor(tmp_path):
     executor.envvars = Mock(return_value={})
     executor.report_job_submission = Mock()
     executor._unified_log_file = str(tmp_path / "snakemake-rules.log")
+    executor._mgmt_id = None
 
     executor.run_job = Executor.run_job.__get__(executor, Executor)
     executor._set_resources = Executor._set_resources.__get__(executor, Executor)
