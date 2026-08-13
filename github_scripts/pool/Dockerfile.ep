@@ -8,7 +8,7 @@
 #
 # Pinned to a specific HTCondor version (not :latest) so CI builds are
 # reproducible and can't break from an upstream :latest republish.
-FROM htcondor/execute:25.11.0-el9
+FROM htcondor/execute:latest
 
 USER root
 
