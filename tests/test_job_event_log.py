@@ -52,6 +52,7 @@ def make_mock_executor(temp_dir=None, **extra_attrs):
     executor._event_logs = {}
     executor._unified_event_log_reader = None
     executor._unified_log_file = str(temp_dir / "snakemake-rules.log")
+    # executor._mgmt_id = None
 
     for method_name in (
         "_read_job_events",
