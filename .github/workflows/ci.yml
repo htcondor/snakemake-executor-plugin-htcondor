@@ -36,7 +36,29 @@ jobs:
             chown -R submituser:submituser /workspace
             cd /workspace
             yum install -y sqlite sqlite-devel python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-pip python${{ env.PYTHON_VERSION }}-devel gcc
+
+            # Start mini-condor (all daemons on single host)
             condor_master
+
+            # Poll condor_who -quick to guarantee all daemons are running
+            # Timeout after 60 seconds
+            rc=0
+            elapsed=0
+            until condor_who -quick | grep -q "^IsReady = true$"; do
+              if [ $elapsed -ge 60 ]; then
+                rc=124
+                break
+              fi
+              sleep 1
+              elapsed=$((elapsed + 1))
+            done
+            # Timeout waiting for daemons: Print nice message and fail
+            if [ $rc -ne 0 ]; then
+              echo "ERROR: HTCondor daemons did not report ready within 60s (timeout, exit=$rc); current status:" >&2
+              condor_who -quick >&2
+              exit $rc
+            fi
+            
             su -c "condor_submit tests/sleep.sub" submituser
             su -c "python${{ env.PYTHON_VERSION }} -m pip install --user poetry" submituser
             su -c "python${{ env.PYTHON_VERSION }} -m poetry lock" submituser
