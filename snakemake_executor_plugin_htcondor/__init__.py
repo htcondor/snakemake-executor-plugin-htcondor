@@ -758,6 +758,9 @@ class Executor(RemoteExecutor):
             for attr in ("script", "notebook"):
                 if value := getattr(rule, attr, None):
                     self.logger.debug(f"Processing {attr}: {value}")
+                    if getattr(rule, "basedir", None):
+                        resolved = str(rule.basedir.join(value))
+                        value = relpath(resolved, self.workflow.workdir_init)
                     self._add_file_if_transferable(
                         value,
                         transfer_input_files,
@@ -2108,6 +2111,7 @@ class Executor(RemoteExecutor):
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
         # Cancel all active jobs.
         # This method is called when Snakemake is interrupted.
+        # Triggered only when Snakemake process was alive before the interruption.
 
         if active_jobs:
             schedd = htcondor.Schedd()
