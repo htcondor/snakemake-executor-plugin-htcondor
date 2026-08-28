@@ -721,17 +721,21 @@ class Executor(RemoteExecutor):
         # group's *external* outputs — those consumed by rules outside the group.
         # Internal intermediates are NOT in job.output.  However, Snakemake's
         # postprocess step checks ALL outputs of ALL rules in the group for
-        # existence on the AP after the job completes.  The fix is to also
-        # collect outputs from each individual job via job.jobs.
-        all_output_paths = list(job.output) if job.output else []
-        if job.is_group() and hasattr(job, "jobs"):
-            seen_paths = {str(p) for p in all_output_paths}
-            for individual_job in job.jobs:
-                for p in individual_job.output:
-                    p_str = str(p)
-                    if p_str not in seen_paths:
-                        seen_paths.add(p_str)
-                        all_output_paths.append(p)
+        # existence on the AP after the job completes.  Collect each rule's
+        # outputs in Snakemake's dependency order so HTCondor receives upstream
+        # outputs before the outputs of their downstream consumers.
+        if job.is_group():
+            all_output_paths = []
+            seen_paths = set()
+            for layer in job.toposorted:
+                for individual_job in layer:
+                    for p in individual_job.output:
+                        p_str = str(p)
+                        if p_str not in seen_paths:
+                            seen_paths.add(p_str)
+                            all_output_paths.append(p)
+        else:
+            all_output_paths = list(job.output) if job.output else []
 
         for path in all_output_paths:
             self._add_file_if_transferable(
@@ -1231,7 +1235,9 @@ class Executor(RemoteExecutor):
             if transfer_output_files:
                 self.logger.debug(f"Transfer output files: {transfer_output_files}")
                 submit_dict["transfer_output_files"] = ", ".join(
-                    sorted(transfer_output_files)
+                    transfer_output_files
+                    if job.is_group()
+                    else sorted(transfer_output_files)
                 )
 
             if transfer_output_remaps:

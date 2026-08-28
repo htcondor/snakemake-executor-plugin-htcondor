@@ -176,7 +176,7 @@ def create_mock_group_job(
         external_outputs: List of output file paths that are consumed by rules
             outside the group.  In real Snakemake, GroupJob.output only contains
             these external outputs — internal intermediates are NOT included.
-            The executor must collect all outputs from job.jobs to discover
+            The executor must collect all outputs from job.toposorted to discover
             internal intermediates.  Defaults to an empty list.
         htcondor_transfer_input_files: Additional input files from resource
         htcondor_transfer_output_files: Additional output files from resource
@@ -185,9 +185,20 @@ def create_mock_group_job(
         Mock job configured as a group job.
     """
     # Use spec_set to limit what attributes the mock has
-    job = Mock(spec=["is_group", "jobs", "input", "output", "resources", "name"])
+    job = Mock(
+        spec=[
+            "is_group",
+            "jobs",
+            "toposorted",
+            "input",
+            "output",
+            "resources",
+            "name",
+        ]
+    )
     job.is_group = Mock(return_value=True)
     job.jobs = individual_jobs
+    job.toposorted = [individual_jobs]
     job.name = "test_group_job"
 
     # Aggregate inputs from all individual jobs (the executor does not use
@@ -197,8 +208,8 @@ def create_mock_group_job(
         job.input.extend(individual_job.input)
 
     # In real Snakemake, GroupJob.output contains only the outputs consumed by
-    # rules OUTSIDE the group.  Internal intermediates are accessible only via
-    # job.jobs[*].output.  If the caller doesn't specify external_outputs, the
+    # rules OUTSIDE the group.  Internal intermediates are accessible via the
+    # individual jobs.  If the caller doesn't specify external_outputs, the
     # mock defaults to an empty list — exactly the worst case the executor must
     # handle correctly.
     job.output = external_outputs if external_outputs is not None else []
