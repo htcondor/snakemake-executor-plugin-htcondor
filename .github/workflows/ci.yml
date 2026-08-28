@@ -58,7 +58,7 @@ jobs:
               condor_who -quick >&2
               exit $rc
             fi
-            
+
             su -c "condor_submit tests/sleep.sub" submituser
             su -c "python${{ env.PYTHON_VERSION }} -m pip install --user poetry" submituser
             su -c "python${{ env.PYTHON_VERSION }} -m poetry lock" submituser
