@@ -4,6 +4,7 @@ Shared test fixtures and utilities for HTCondor executor tests.
 
 from contextlib import contextmanager
 from unittest.mock import Mock, patch
+import os
 
 import snakemake_executor_plugin_htcondor as plugin
 from snakemake_executor_plugin_htcondor import Executor
@@ -50,6 +51,7 @@ def create_mock_submit_executor(tmp_path):
     executor.envvars = Mock(return_value={})
     executor.report_job_submission = Mock()
     executor._unified_log_file = str(tmp_path / "snakemake-rules.log")
+    executor._mgmt_id = None
 
     executor.run_job = Executor.run_job.__get__(executor, Executor)
     executor._set_resources = Executor._set_resources.__get__(executor, Executor)
@@ -216,3 +218,55 @@ def create_mock_group_job(
     job.resources.get = Mock(side_effect=resource_get)
 
     return job
+
+
+def create_mock_metadata_executor(
+    tmp_path, mgmt_id=12345, total_nodes=5, executable_nodes=4
+):
+    """
+    Create a mock executor configured for metadata file tests.
+
+    This builds on create_mock_submit_executor and adds what run_job's metadata path
+    depends on.
+
+    Args:
+        tmp_path: pytest tmp_path fixture value.
+        mgmt_id: cluster_id of local universe management job. otherwise, None.
+        total_nodes: size of workflow.dag.jobs
+        executable_nodes: count of non-local needrun jobs (actually get submitted to the EP).
+
+    Returns:
+        Mock executor with metadata methods bound and (if mgmt_id is set) initial metadata
+        already written.
+
+    """
+    executor = create_mock_submit_executor(tmp_path)
+
+    os.makedirs(executor.jobDir, exist_ok=True)
+
+    for method_name in (
+        "_initialize_metadata",
+        "_write_metadata",
+        "_add_job_to_metadata",
+        "_update_job_status_in_metadata",
+        "_flush_metadata_if_dirty",
+    ):
+        method = getattr(Executor, method_name)
+        setattr(executor, method_name, method.__get__(executor, Executor))
+
+    executor._mgmt_id = mgmt_id
+    executor._metadata = {}
+    executor._metadata_dirty = False
+    executor._metadata_file = None
+
+    if mgmt_id is not None:
+        executor._metadata_file = os.path.join(
+            executor.jobDir, f"snakemake-metadata-{mgmt_id}.json"
+        )
+        executor.workflow.dag = Mock()
+        executor.workflow.dag.jobs = [Mock() for _ in range(total_nodes)]
+        executor.workflow.dag.needrun_jobs = Mock(
+            return_value=[Mock(is_local=False) for _ in range(executable_nodes)]
+        )
+        executor._initialize_metadata(mgmt_id)  # mirrors what __init__ does
+    return executor
