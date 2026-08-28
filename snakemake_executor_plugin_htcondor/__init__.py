@@ -183,8 +183,13 @@ class Executor(RemoteExecutor):
         # Track all job events from a single unified log file
         self._unified_event_log_reader: Optional[JobEventLog] = None
 
-        # Dictionary to track events as they are being read in _read_job_events so that they will not be lost
-        self._event_logs: Dict[int, list] = {}
+        # Dictionary to track events as they are being read in _read_job_events
+        # so that they will not be lost. RemoteExecutor starts its status thread
+        # before calling __post_init__, so preserve a buffer that the thread may
+        # already have initialized in _drain_unified_log.
+        self._event_logs: Dict[int, list] = self.__dict__.setdefault(
+            "_event_logs", {}
+        )
 
         # Dictionary to track the latest known state for each job.
         # Key: external_jobid (ClusterId), Value: JobState dataclass
@@ -2089,6 +2094,11 @@ class Executor(RemoteExecutor):
         only read NEW events appended since the last read.
 
         """
+        # RemoteExecutor starts its status thread before calling __post_init__.
+        # Initialize the per-instance buffer defensively in case this method wins
+        # that race. setdefault also ensures __post_init__ preserves this object.
+        event_logs: Dict[int, list] = self.__dict__.setdefault("_event_logs", {})
+
         # Get the event log
         event_log = self._get_job_event_log()
 
@@ -2099,11 +2109,11 @@ class Executor(RemoteExecutor):
         # Get and organized all new events by their cluster_id
         for event in event_log.events(stop_after=0):
             clusterid = event.cluster
-            if clusterid not in self._event_logs:
+            if clusterid not in event_logs:
                 # Initialize
-                self._event_logs[clusterid] = []
+                event_logs[clusterid] = []
             # Append to existing job
-            self._event_logs[clusterid].append(event)
+            event_logs[clusterid].append(event)
 
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
         # Cancel all active jobs.
