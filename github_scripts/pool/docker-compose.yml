@@ -16,8 +16,8 @@ name: htcondor-torture
 
 services:
   cm:
-    # Pinned to a specific HTCondor version (not :latest) for reproducible builds.
-    image: htcondor/cm:latest
+    # Match the AP and EP 25.12.2-el9 pin for reproducible CI.
+    image: htcondor/cm:25.12.2-el9
     hostname: cm
     environment:
       CONDOR_HOST: cm

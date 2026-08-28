@@ -18,7 +18,7 @@ on:
 
 jobs:
   torture-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || vars.SELF_HOSTED_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 30
     defaults:
       run:
