@@ -15,6 +15,7 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 from htcondor2 import JobEventLog, JobEventType
+import classad2 as classad
 import traceback
 from os.path import join, isabs, relpath, normpath, exists
 from os import makedirs, sep
@@ -217,9 +218,16 @@ class Executor(RemoteExecutor):
         # Path to the unified log file that tracks all jobs submitted
         self._unified_log_file = join(self.jobDir, "snakemake-rules.log")
 
-        # Get mgmt_id from env, this needs to be optional for those who are not using CLI
-        mgmt_id_raw = os.environ.get("SNAKEMAKE_MGMT_ID")
-        self._mgmt_id = int(mgmt_id_raw) if mgmt_id_raw else None
+        # Get mgmt_id from _condor_job_ad env variable and making it optional for those who just use condor_submit
+        self._mgmt_id = None
+        job_ad_path = os.environ.get("_CONDOR_JOB_AD")
+        if job_ad_path:
+            try:
+                with open(job_ad_path) as f:
+                    job_ad = classad.parseOne(f)
+                self._mgmt_id = int(job_ad["ClusterId"])
+            except (OSError, KeyError, ValueError):
+                self._mgmt_id = None
         if self._mgmt_id is not None:
             htcondor.Schedd().edit(
                 f"ClusterId == {self._mgmt_id}", "SnakeMgmtPID", os.getpid()
