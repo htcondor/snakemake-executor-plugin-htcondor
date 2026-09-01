@@ -5,13 +5,14 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 env:
   PYTHON_VERSION: 3.11
 
 jobs:
   pre-commit:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || vars.SELF_HOSTED_RUNNER_LABEL || 'ubuntu-latest' }}
     steps:
       - name: Clone the code
         uses: actions/checkout@v3
@@ -23,49 +24,26 @@ jobs:
         uses: pre-commit/action@v3.0.1
 
   testing:
-    runs-on: ubuntu-latest
-    container:
-      image: htcondor/mini
-      env:
-        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/submituser/.local/bin
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || vars.SELF_HOSTED_RUNNER_LABEL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Python and more yum
+      - name: Run HTCondor tests
         run: |
-          yum install -y sqlite sqlite-devel
-          yum install -y python${{ env.PYTHON_VERSION }}
-          yum install -y python${{ env.PYTHON_VERSION }}-pip
-          yum install -y python${{ env.PYTHON_VERSION }}-devel
-          yum install -y gcc
-
-      - name: HTCondor master
-        run:  condor_master
-
-      - name: Test submit to HTCondor
-        run: su -c "condor_submit tests/sleep.sub" submituser
-
-      - name: Install poetry
-        run: su -c "pip${{ env.PYTHON_VERSION }} install poetry" submituser
-
-      - name: Determine dependencies
-        run: su -c "poetry lock" submituser
-
-      - name: Install dependencies
-        run: su -c "poetry install" submituser
-
-      - name: Run pytest
-        run: su -c "poetry run coverage run -m pytest tests/ integration_tests/ -vvv" submituser
-
-      - name: Check HTCondor logs
-        run: |
-          ls  /tmp/pytest-of-submituser/pytest-0/test_simple_workflow0/simple/.snakemake/htcondor
-          for file in /tmp/pytest-of-submituser/pytest-0/test_simple_workflow0/simple/.snakemake/htcondor/*.log; do cat "$file"; done
-
-      - name: Check HTCondor errors
-        run: |
-          ls  /tmp/pytest-of-submituser/pytest-0/test_simple_workflow0/simple/.snakemake/htcondor
-          find /tmp/pytest-of-submituser/pytest-0/test_simple_workflow0/simple/.snakemake/htcondor -name "*.err" -exec cat {} \;
-
-      - name: Run Coverage
-        run: su -c "poetry run coverage report -m --omit=Snakefile" submituser
+          docker run --rm -v "$GITHUB_WORKSPACE":/source:ro htcondor/mini bash -lc '
+            set -e
+            cp -a /source /workspace
+            chown -R submituser:submituser /workspace
+            cd /workspace
+            yum install -y sqlite sqlite-devel python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-pip python${{ env.PYTHON_VERSION }}-devel gcc
+            condor_master
+            su -c "condor_submit tests/sleep.sub" submituser
+            su -c "python${{ env.PYTHON_VERSION }} -m pip install --user poetry" submituser
+            su -c "python${{ env.PYTHON_VERSION }} -m poetry lock" submituser
+            su -c "python${{ env.PYTHON_VERSION }} -m poetry install" submituser
+            su -c "python${{ env.PYTHON_VERSION }} -m poetry run coverage run -m pytest tests/ integration_tests/ -vvv" submituser
+            ls /tmp/pytest-of-submituser/pytest-0/test_simple_workflow0/simple/.snakemake/htcondor
+            for file in /tmp/pytest-of-submituser/pytest-0/test_simple_workflow0/simple/.snakemake/htcondor/*.log; do cat "$file"; done
+            find /tmp/pytest-of-submituser/pytest-0/test_simple_workflow0/simple/.snakemake/htcondor -name "*.err" -exec cat {} \;
+            su -c "python${{ env.PYTHON_VERSION }} -m poetry run coverage report -m --omit=Snakefile" submituser
+          '

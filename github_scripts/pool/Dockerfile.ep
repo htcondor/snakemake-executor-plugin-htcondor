@@ -6,9 +6,8 @@
 # can run them. It does NOT need the executor plugin (the plugin only runs on
 # the AP). The base image's CMD (/start.sh -> supervisord -> startd) is kept.
 #
-# Pinned to a specific HTCondor version (not :latest) so CI builds are
-# reproducible and can't break from an upstream :latest republish.
-FROM htcondor/execute:latest
+# Match the AP and central-manager 25.12.2-el9 pin for reproducible CI.
+FROM htcondor/execute:25.12.2-el9
 
 USER root
 

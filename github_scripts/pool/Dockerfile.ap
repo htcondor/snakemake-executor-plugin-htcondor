@@ -4,8 +4,9 @@
 # COPY the plugin source and install it. The base image's CMD (/start.sh ->
 # supervisord -> condor daemons) is preserved.
 #
-# Pinned to a specific HTCondor version (not :latest) for reproducible CI builds.
-FROM htcondor/submit:latest
+# Pin a current HTCondor build for reproducible CI. 25.11.0-el9 fails
+# pool-password authentication in the torture-test pool (FS:1004).
+FROM htcondor/submit:25.12.2-el9
 
 USER root
 
