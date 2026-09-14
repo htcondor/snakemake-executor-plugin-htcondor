@@ -494,6 +494,9 @@ class TestFilesystemModes:
         self.executor._sanitize_job_args = Executor._sanitize_job_args.__get__(
             self.executor, Executor
         )
+        self.executor._strip_ap_local_path_args = (
+            Executor._strip_ap_local_path_args.__get__(self.executor, Executor)
+        )
 
     def test_mode1_full_shared_fs_no_transfer(self):
         """

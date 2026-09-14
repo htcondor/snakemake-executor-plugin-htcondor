@@ -429,3 +429,135 @@ class TestOutputRemaps:
 
         assert "logs/run.log" in transfer_output
         assert any("logs/run.log" in r for r in remaps)
+
+
+# ---------------------------------------------------------------------------
+# 4. AP-local absolute path scrubbing (reachability-based)
+# ---------------------------------------------------------------------------
+
+
+def _make_scrub_executor(shared_prefixes=None):
+    """Mock Executor with _strip_ap_local_path_args bound."""
+    executor = Mock(spec=Executor)
+    executor.logger = Mock()
+    executor.shared_fs_prefixes = shared_prefixes or []
+    executor._strip_ap_local_path_args = Executor._strip_ap_local_path_args.__get__(
+        executor, Executor
+    )
+    return executor
+
+
+class TestStripApLocalPathArgs:
+    """Absolute path args that resolve on the AP but aren't shared are dropped
+    (directories) or warned about (files); paths that don't resolve on the AP
+    (CVMFS / container-baked / node-local), shared paths, and relative paths all
+    pass through untouched."""
+
+    def test_ap_local_directory_dropped(self, tmp_path):
+        """The reported bug: an absolute AP directory (e.g. a leaked
+        APPTAINER_CACHEDIR) is removed when it is not on a shared filesystem."""
+        cache = tmp_path / "apptainer_cache"
+        cache.mkdir()
+        ex = _make_scrub_executor()
+        args = f"--snakefile Snakefile --apptainer-prefix {cache} --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert "--apptainer-prefix" not in out
+        assert str(cache) not in out
+        assert "--snakefile Snakefile" in out
+        assert "--notemp" in out
+
+    def test_nonexistent_path_kept(self, tmp_path):
+        """A path that does not resolve on the AP (CVMFS / container-baked /
+        node-local) must pass through untouched."""
+        missing = tmp_path / "cvmfs_like" / "images"  # never created
+        ex = _make_scrub_executor()
+        args = f"--apptainer-prefix {missing} --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert f"--apptainer-prefix {missing}" in out
+
+    def test_shared_prefix_directory_kept(self, tmp_path):
+        """An AP-resident directory under a declared shared-fs prefix is reachable
+        on the EP and must be kept."""
+        shared = tmp_path / "staging"
+        cache = shared / "cache"
+        cache.mkdir(parents=True)
+        ex = _make_scrub_executor(shared_prefixes=[str(shared) + "/"])
+        args = f"--apptainer-prefix {cache} --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert f"--apptainer-prefix {cache}" in out
+
+    def test_relative_path_kept(self):
+        """Relative prefixes resolve under the EP scratch dir and are kept."""
+        ex = _make_scrub_executor()
+        args = "--apptainer-prefix .snakemake/singularity --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert "--apptainer-prefix .snakemake/singularity" in out
+
+    def test_ap_local_file_warned_but_kept(self, tmp_path):
+        """An absolute AP *file* (unexpected here) is surfaced via a warning but
+        left in place rather than silently dropped."""
+        f = tmp_path / "ref.yaml"
+        f.write_text("x: 1\n")
+        ex = _make_scrub_executor()
+        args = f"--some-file {f} --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert f"--some-file {f}" in out
+        assert ex.logger.warning.called
+        warning_text = " ".join(str(c) for c in ex.logger.warning.call_args_list)
+        assert str(f) in warning_text
+
+    def test_multiple_ap_local_dirs_dropped(self, tmp_path):
+        """Several AP-local directory args are scrubbed in a single pass."""
+        d1 = tmp_path / "apcache"
+        d1.mkdir()
+        d2 = tmp_path / "condacache"
+        d2.mkdir()
+        ex = _make_scrub_executor()
+        args = f"--apptainer-prefix {d1} --conda-prefix {d2} --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert "--apptainer-prefix" not in out
+        assert "--conda-prefix" not in out
+        assert "--notemp" in out
+
+    def test_list_arg_not_partially_rewritten(self, tmp_path):
+        """A multi-valued flag is never touched, so the command can't be corrupted
+        even when its values are AP-local directories."""
+        d1 = tmp_path / "a"
+        d1.mkdir()
+        d2 = tmp_path / "b"
+        d2.mkdir()
+        ex = _make_scrub_executor()
+        args = f"--configfiles {d1} {d2} --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert "--configfiles" in out
+        assert str(d1) in out
+        assert str(d2) in out
+
+    def test_boolean_flags_and_scalar_values_preserved(self, tmp_path):
+        """Boolean flags and ordinary scalar values survive; only the AP-local
+        directory arg is removed."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        ex = _make_scrub_executor()
+        args = f"--force --cores all --apptainer-prefix {cache} --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert "--force" in out
+        assert "--cores all" in out
+        assert "--apptainer-prefix" not in out
+        assert "--notemp" in out
+
+    def test_no_absolute_args_unchanged(self):
+        """A command with no absolute path args is returned verbatim."""
+        ex = _make_scrub_executor()
+        args = "--snakefile Snakefile --cores all --notemp"
+        out = ex._strip_ap_local_path_args(args)
+
+        assert out == args
