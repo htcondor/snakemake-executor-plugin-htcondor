@@ -92,6 +92,18 @@ def _setup_event_log(executor, cluster_id, events):
     executor._unified_event_log_reader = mock_unified_log
 
 
+def test_drain_unified_log_initializes_missing_event_buffer(tmp_path):
+    """The status thread may drain the log before __post_init__ creates its buffer."""
+    executor = make_mock_executor(temp_dir=tmp_path)
+    del executor._event_logs
+    event = make_event(JobEventType.SUBMIT)
+    _setup_event_log(executor, 123, [event])
+
+    executor._drain_unified_log()
+
+    assert executor._event_logs == {123: [event]}
+
+
 # ---------------------------------------------------------------------------
 # Event-type → status mapping
 # ---------------------------------------------------------------------------
