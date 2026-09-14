@@ -187,9 +187,7 @@ class Executor(RemoteExecutor):
         # so that they will not be lost. RemoteExecutor starts its status thread
         # before calling __post_init__, so preserve a buffer that the thread may
         # already have initialized in _drain_unified_log.
-        self._event_logs: Dict[int, list] = self.__dict__.setdefault(
-            "_event_logs", {}
-        )
+        self._event_logs: Dict[int, list] = self.__dict__.setdefault("_event_logs", {})
 
         # Dictionary to track the latest known state for each job.
         # Key: external_jobid (ClusterId), Value: JobState dataclass
