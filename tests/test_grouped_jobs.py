@@ -240,25 +240,48 @@ class TestGroupedJobInputOutputTransfer:
             os.unlink(input2.name)
 
     def test_combined_outputs_from_grouped_jobs(self):
-        """Test that explicit output files from all jobs in a group are collected."""
-        individual_jobs = [
-            create_mock_individual_job(output_files=["output/job1_result.txt"]),
-            create_mock_individual_job(output_files=["results/job2_data.csv"]),
-        ]
+        """Test that grouped outputs retain dependency order over lexical order."""
+        upstream_job = create_mock_individual_job(
+            output_files=["work/01_stac/sample.pkl"]
+        )
+        downstream_job = create_mock_individual_job(
+            output_files=["work/01A_purge/sample.pkl"]
+        )
 
-        group_job = create_mock_group_job(individual_jobs)
+        # Deliberately reverse job.jobs to prove collection uses toposorted.
+        group_job = create_mock_group_job([downstream_job, upstream_job])
+        group_job.toposorted = [[upstream_job], [downstream_job]]
 
         _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
             group_job
         )
 
-        # Explicit output files (not top-level directories) should be transferred
-        assert "output/job1_result.txt" in transfer_output
-        assert "results/job2_data.csv" in transfer_output
-        # Top-level directories must NOT appear (that was the old mtime-buggy behavior)
-        assert "output" not in transfer_output
-        assert "results" not in transfer_output
-        # A remap must exist for every transferred output
+        assert transfer_output == [
+            "work/01_stac/sample.pkl",
+            "work/01A_purge/sample.pkl",
+        ]
+        assert transfer_remaps == [
+            "work/01_stac/sample.pkl = /test/workdir/work/01_stac/sample.pkl",
+            "work/01A_purge/sample.pkl = /test/workdir/work/01A_purge/sample.pkl",
+        ]
+
+    def test_parallel_group_outputs_precede_downstream_consumer(self):
+        """Test that every independent upstream output precedes its consumer."""
+        upstream_a = create_mock_individual_job(output_files=["work/z_a.txt"])
+        upstream_b = create_mock_individual_job(output_files=["work/z_b.txt"])
+        downstream = create_mock_individual_job(output_files=["work/a_final.txt"])
+        group_job = create_mock_group_job([downstream, upstream_b, upstream_a])
+        group_job.toposorted = [[upstream_a, upstream_b], [downstream]]
+
+        _, transfer_output, transfer_remaps = self.executor._get_files_for_transfer(
+            group_job
+        )
+
+        assert transfer_output == [
+            "work/z_a.txt",
+            "work/z_b.txt",
+            "work/a_final.txt",
+        ]
         assert len(transfer_remaps) == len(transfer_output)
 
 
