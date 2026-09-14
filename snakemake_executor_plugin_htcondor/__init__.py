@@ -167,6 +167,8 @@ class Executor(RemoteExecutor):
         # access executor specific settings
         self.workflow.executor_settings
 
+        self._mgmt_id = None
+
         # jobDir: Directory where the job will store log, output and error files.
         self.jobDir = self.workflow.executor_settings.jobdir
 
@@ -220,7 +222,6 @@ class Executor(RemoteExecutor):
         self._unified_log_file = join(self.jobDir, "snakemake-rules.log")
 
         # Get mgmt_id from _condor_job_ad env variable and making it optional for those who just use condor_submit
-        self._mgmt_id = None
         job_ad_path = os.environ.get("_CONDOR_JOB_AD")
         if job_ad_path:
             try:
