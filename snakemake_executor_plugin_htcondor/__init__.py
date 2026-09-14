@@ -15,9 +15,11 @@ from snakemake_interface_common.exceptions import WorkflowError  # noqa
 
 import htcondor2 as htcondor
 from htcondor2 import JobEventLog, JobEventType
+import classad2 as classad
 import traceback
 from os.path import join, isabs, relpath, normpath, exists, isdir
 from os import makedirs, sep
+import os
 import re
 import sys
 
@@ -215,6 +217,21 @@ class Executor(RemoteExecutor):
 
         # Path to the unified log file that tracks all jobs submitted
         self._unified_log_file = join(self.jobDir, "snakemake-rules.log")
+
+        # Get mgmt_id from _condor_job_ad env variable and making it optional for those who just use condor_submit
+        self._mgmt_id = None
+        job_ad_path = os.environ.get("_CONDOR_JOB_AD")
+        if job_ad_path:
+            try:
+                with open(job_ad_path) as f:
+                    job_ad = classad.parseOne(f)
+                self._mgmt_id = int(job_ad["ClusterId"])
+            except (OSError, KeyError, ValueError):
+                self._mgmt_id = None
+        if self._mgmt_id is not None:
+            htcondor.Schedd().edit(
+                f"ClusterId == {self._mgmt_id}", "SnakeMgmtPID", os.getpid()
+            )
 
     def _validate_held_timeout(self):
         """Validate the held job timeout configuration.
@@ -1268,6 +1285,9 @@ class Executor(RemoteExecutor):
             "error": join(rule_log_dir, f"{rule_name}-{job.jobid}_$(ClusterId).err"),
             "request_cpus": str(job.threads),
         }
+        # Associate this job with its management id if there is one
+        if self._mgmt_id is not None:
+            submit_dict["+SnakeManagerJobId"] = self._mgmt_id
 
         # Supported universes for HTCondor
         supported_universes = [
