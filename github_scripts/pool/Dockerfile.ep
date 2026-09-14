@@ -8,7 +8,8 @@
 #
 
 # Match the AP and central-manager 25.12.2-el9 pin for reproducible CI.
-FROM htcondor/execute:25.12.2-el9
+ARG HTCONDOR_VERSION
+FROM htcondor/execute:${HTCONDOR_VERSION}
 
 
 USER root
