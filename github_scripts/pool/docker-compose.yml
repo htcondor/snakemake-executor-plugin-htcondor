@@ -16,8 +16,8 @@ name: htcondor-torture
 
 services:
   cm:
-    # Pinned to a specific HTCondor version (not :latest) for reproducible builds.
-    image: htcondor/cm:25.11.0-el9
+    # Match the AP and EP 25.12.2-el9 pin for reproducible CI.
+    image: htcondor/cm:${HTCONDOR_VERSION}
     hostname: cm
     environment:
       CONDOR_HOST: cm
@@ -31,6 +31,8 @@ services:
     build:
       context: ../..
       dockerfile: github_scripts/pool/Dockerfile.ap
+      args:
+        HTCONDOR_VERSION: ${HTCONDOR_VERSION}
     image: torture-ap
     hostname: ap
     environment:
@@ -49,6 +51,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ep
+      args:
+        HTCONDOR_VERSION: ${HTCONDOR_VERSION}
     image: torture-ep
     hostname: ep
     environment:

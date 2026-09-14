@@ -259,6 +259,7 @@ class TestScriptTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        self.job.rule.basedir = None
 
     def test_script_file_transferred(self):
         """Test that script files are included in transfer list."""
@@ -355,6 +356,7 @@ class TestNotebookTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        self.job.rule.basedir = None
 
     def test_notebook_file_transferred(self):
         """Test that notebook files are included in transfer list."""
@@ -372,6 +374,235 @@ class TestNotebookTransfer:
             assert notebook_path in transfer_input
         finally:
             os.unlink(notebook_path)
+
+
+class FakeBaseDir:
+    """
+    Mimics Snakemake's SourceFile enough for basedir-resolution tests.
+
+    The actual `rule.basedir` is always absolute (Snakemake calls `.abspath()`
+    when computing it), and `.join()` returns another SourceFile-like
+    object whose `str()` gives the absolute joined path.
+    """
+
+    def __init__(self, path):
+        self.path = os.path.abspath(path)
+
+    def join(self, other):
+        # combinng basedir with script's relative path
+        return FakeBaseDir(os.path.join(self.path, str(other)))
+
+    def __str__(self):
+        return self.path
+
+
+class TestScriptBasedirResolution:
+    """
+    Test that `script:` and `notebook:` rule paths are resolved against the defining
+    rule's Snakefile directory (rule.basedir), then converted back to a
+    path relative to the submit directory.
+    """
+
+    def setup_method(self):
+        self.executor = Mock(spec=Executor)
+        self.executor.logger = Mock()
+        self.executor.shared_fs_prefixes = []
+        self.executor.workflow = Mock()
+        self.executor.workflow.configfiles = []
+        self.executor.get_snakefile = Mock(return_value="Snakefile")
+
+        self.executor._get_files_for_transfer = (
+            Executor._get_files_for_transfer.__get__(self.executor, Executor)
+        )
+        self.executor._add_file_if_transferable = (
+            Executor._add_file_if_transferable.__get__(self.executor, Executor)
+        )
+
+        self.submit_dir = tempfile.mkdtemp()
+        self.executor.workflow.workdir_init = self.submit_dir
+        self.cwd = os.getcwd()
+        os.chdir(self.submit_dir)
+
+        self.job = Mock()
+        self.job.is_group = Mock(return_value=False)
+        self.job.input = []
+        self.job.output = []
+        self.job.resources = Mock()
+        self.job.resources.get = Mock(return_value=None)
+        self.job.rule = Mock()
+        self.job.rule.script = None
+        self.job.rule.notebook = None
+        self.job.rule.basedir = None
+        self.job.wildcards = {}
+        self.job.params = {}
+        # return what was given instead of hardcoded-path
+        self.job.format_wildcards = Mock(side_effect=lambda path, **kw: path)
+
+    def teardown_method(self):
+        """Run after each test to prevent leaking outside the test"""
+        import shutil
+
+        os.chdir(self.cwd)
+        shutil.rmtree(self.submit_dir, ignore_errors=True)
+
+    def test_script_in_subdirectory_resolved_relative_to_submit_dir(self):
+        """Snakefile in smk/ dir and script is relative to it."""
+
+        os.makedirs(os.path.join(self.submit_dir, "smk", "scripts"), exist_ok=True)
+        script_abs = os.path.join(self.submit_dir, "smk", "scripts", "hello.py")
+        with open(script_abs, "w") as f:
+            f.write("# test script")
+
+        self.job.rule.script = "scripts/hello.py"
+        self.job.rule.basedir = FakeBaseDir(os.path.join(self.submit_dir, "smk"))
+
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
+
+        assert "smk/scripts/hello.py" in transfer_input
+        assert "scripts/hello.py" not in transfer_input
+        assert not any(
+            os.path.isabs(p) for p in transfer_input if p.endswith("hello.py")
+        )
+
+    def test_script_at_submit_root_unchanged(self):
+        """When the Snakefile is at the submit root, behavior must stay identical to before the fix."""
+
+        os.makedirs(os.path.join(self.submit_dir, "scripts"), exist_ok=True)
+        script_abs = os.path.join(self.submit_dir, "scripts", "hello.py")
+        with open(script_abs, "w") as f:
+            f.write("# test script")
+
+        self.job.rule.script = "scripts/hello.py"
+        self.job.rule.basedir = FakeBaseDir(self.submit_dir)
+
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
+
+        assert "scripts/hello.py" in transfer_input
+
+    def test_script_with_basedir_none_falls_back_to_raw_value(self):
+        """If a rule has no basedir at all, the path is used as-is"""
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as tmp:
+            script_path = tmp.name
+
+        try:
+            self.job.rule.script = script_path
+            self.job.rule.basedir = None  # no basedir to join
+
+            transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
+
+            assert script_path in transfer_input  # the path is untouched
+        finally:
+            os.unlink(script_path)
+
+    def test_notebook_in_subdirectory_resolved_relative_to_submit_dir(self):
+        """Snakefile in smk/ dir and notebook is relative to it."""
+
+        os.makedirs(os.path.join(self.submit_dir, "smk", "notebooks"), exist_ok=True)
+        notebook_abs = os.path.join(
+            self.submit_dir, "smk", "notebooks", "analysis.ipynb"
+        )
+
+        with open(notebook_abs, "w") as f:
+            f.write("{}")
+
+        self.job.rule.notebook = "notebooks/analysis.ipynb"
+        self.job.rule.basedir = FakeBaseDir(os.path.join(self.submit_dir, "smk"))
+
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
+
+        assert "smk/notebooks/analysis.ipynb" in transfer_input
+        assert "notebooks/analysis.ipynb" not in transfer_input
+
+    def test_wildcards_expanded_after_basedir_join(self):
+        """basedir-join must happen before wildcard expansion, so a
+        wildcarded script in a subdirectory still resolves correctly."""
+
+        os.makedirs(os.path.join(self.submit_dir, "smk", "scripts"), exist_ok=True)
+        script_abs = os.path.join(
+            self.submit_dir, "smk", "scripts", "process_sample1.py"
+        )
+
+        with open(script_abs, "w") as f:
+            f.write("# test script")
+
+        self.job.rule.script = "scripts/process_{sample}.py"
+        self.job.rule.basedir = FakeBaseDir(os.path.join(self.submit_dir, "smk"))
+        self.job.wildcards = {"sample": "sample1"}
+        self.job.format_wildcards = Mock(
+            side_effect=lambda path, **kw: path.replace("{sample}", "sample1")
+        )
+
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
+
+        self.job.format_wildcards.assert_called()
+        # The value handed to format_wildcards must already be path resolved
+        called_with = self.job.format_wildcards.call_args[0][0]
+        assert called_with == "smk/scripts/process_{sample}.py"
+        assert "smk/scripts/process_sample1.py" in transfer_input
+
+    def test_group_job_each_rule_uses_its_own_basedir(self):
+        """
+        Group jobs: rules from different included Snakefiles must each resolve
+        against their own basedir, not the group's or the main Snakefile's.
+
+        For example:
+        - We have: smk/preprocessing.smk, included/analysis.smk
+        - In smk/preprocessing.smk:
+            rule step1:
+                output: ...
+                script: "scripts/a.py" # should resolve to relative to smk/
+                group: "pipeline" # same group
+        - In include/analysis.smk
+            rule step2:
+                input: output file from step 1
+                output: ...
+                script: "scripts/b.py" # should resolve to relative to include/
+                group: "pipeline" # same group
+        """
+
+        os.makedirs(os.path.join(self.submit_dir, "smk", "scripts"), exist_ok=True)
+        os.makedirs(os.path.join(self.submit_dir, "included", "scripts"), exist_ok=True)
+
+        script_a = os.path.join(self.submit_dir, "smk", "scripts", "a.py")
+        script_b = os.path.join(self.submit_dir, "included", "scripts", "b.py")
+
+        with open(script_a, "w") as f:
+            f.write("# a")
+        with open(script_b, "w") as f:
+            f.write("# b")
+
+        rule_a = Mock()
+        rule_a.script = "scripts/a.py"
+        rule_a.notebook = None
+        rule_a.basedir = FakeBaseDir(os.path.join(self.submit_dir, "smk"))
+
+        rule_b = Mock()
+        rule_b.script = "scripts/b.py"
+        rule_b.notebook = None
+        rule_b.basedir = FakeBaseDir(os.path.join(self.submit_dir, "included"))
+
+        indv_j_a = Mock()
+        indv_j_a.rule = rule_a
+        indv_j_a.output = []
+        indv_j_a.wildcards = {}
+        indv_j_a.params = {}
+        indv_j_a.format_wildcards = Mock(side_effect=lambda path, **kw: path)
+
+        indv_j_b = Mock()
+        indv_j_b.rule = rule_b
+        indv_j_b.output = []
+        indv_j_b.wildcards = {}
+        indv_j_b.params = {}
+        indv_j_b.format_wildcards = Mock(side_effect=lambda path, **kw: path)
+
+        self.job.is_group = Mock(return_value=True)
+        self.job.jobs = [indv_j_a, indv_j_b]
+
+        transfer_input, *_ = self.executor._get_files_for_transfer(self.job)
+
+        assert "smk/scripts/a.py" in transfer_input
+        assert "included/scripts/b.py" in transfer_input
 
 
 class TestJobWrapperTransfer:
@@ -404,6 +635,7 @@ class TestJobWrapperTransfer:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        self.job.rule.basedir = None
         self.job.rules = [self.job.rule]
 
     def test_job_wrapper_transferred(self):
@@ -502,6 +734,7 @@ class TestCustomTransferResources:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        self.job.rule.basedir = None
 
     def test_htcondor_transfer_input_files_string(self):
         """Test htcondor_transfer_input_files with comma-separated string."""
@@ -672,6 +905,7 @@ class TestFileTransferLogging:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        self.job.rule.basedir = None
 
     def test_logs_transfer_summary(self):
         """Test that summary of transfer files is logged."""
@@ -1056,6 +1290,7 @@ class TestAbsolutePathWarning:
         self.job.rule = Mock()
         self.job.rule.script = None
         self.job.rule.notebook = None
+        self.job.rule.basedir = None
 
     def test_warns_on_absolute_paths(self):
         # Create a temporary file with an absolute path

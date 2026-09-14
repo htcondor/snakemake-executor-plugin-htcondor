@@ -18,7 +18,7 @@ on:
 
 jobs:
   torture-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || vars.SELF_HOSTED_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 30
     defaults:
       run:
@@ -29,6 +29,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Load pool env vars
+        run: cat docker-compose.env >> "$GITHUB_ENV"
 
       - name: Generate pool password
         run: ./make-pool-password.sh

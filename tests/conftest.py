@@ -127,6 +127,7 @@ def create_mock_individual_job(
     job.rule = Mock()
     job.rule.script = script
     job.rule.notebook = notebook
+    job.rule.basedir = None
 
     # Setup resources
     def resource_get(key, default=None):
