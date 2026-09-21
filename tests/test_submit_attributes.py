@@ -121,3 +121,39 @@ class TestSubmittingAttributes:
 
         assert captured_submit_dict["transfer_input_files"] == "htcondor.txt"
         assert captured_submit_dict["request_memory"] == 512
+
+    @pytest.mark.parametrize(
+        "is_group, expected",
+        [
+            pytest.param(
+                True,
+                "work/z_upstream.txt, work/a_downstream.txt",
+                id="group_dependency_order",
+            ),
+            pytest.param(
+                False,
+                "work/a_downstream.txt, work/z_upstream.txt",
+                id="ordinary_lexical_order",
+            ),
+        ],
+    )
+    def test_run_job_orders_transfer_outputs(self, mock_executor, is_group, expected):
+        """Test grouped order preservation and ordinary lexical sorting."""
+        captured_submit_dict = {}
+        mock_executor._get_exec_args_and_transfer_files.return_value = (
+            "python",
+            "-m snakemake --cores 1",
+            [],
+            ["work/z_upstream.txt", "work/a_downstream.txt"],
+            [],
+        )
+        with mock_htcondor_submission(captured_submit_dict):
+            job = Mock()
+            job.name = "output_order"
+            job.jobid = 10
+            job.threads = 1
+            job.resources = {}
+            job.is_group = Mock(return_value=is_group)
+            mock_executor.run_job(job)
+
+        assert captured_submit_dict["transfer_output_files"] == expected
